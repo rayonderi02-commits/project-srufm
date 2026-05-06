@@ -10,7 +10,12 @@ from sklearn.svm import SVC
 
 
 class SVMModel:
-    """Thin, serializable wrapper around sklearn's probability-enabled SVC."""
+    """
+    Support Vector Machine (SVM) is a powerful supervised machine learning algorithm
+    used primarily for classification and regression tasks. It works by finding the optimal hyperplane
+    (decision boundary) that maximizes the margin—the distance—between different classes in a high-dimensional
+    space, effectively handling both linear and non-linear data.
+    """
 
     def __init__(
         self,
