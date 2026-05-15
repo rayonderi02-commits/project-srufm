@@ -7,6 +7,8 @@ Kiswahili speech hardware prototype.
 
 - `main.py` - reads a push button, enables microphone listening over UART, and
   drives an LED/buzzer indicator.
+- `accent_hardware_runner.py` - records real microphone audio when the button is
+  pressed and classifies the speaker accent with the trained ASR model.
 
 ## Current Pin Mapping
 
@@ -32,9 +34,54 @@ UART.
 Power the microphone from 3.3V unless the exact module requires 5V and has safe
 3.3V UART logic or a level shifter.
 
-## Run
+## Sound-Level Demo
 
 ```bash
 cd /path/to/project-srufm/hardware
 python3 -u main.py
+```
+
+## Accent Classification Runner
+
+Accent classification needs real waveform audio, such as a USB microphone, I2S
+microphone, or ALSA/PyAudio-compatible audio input. A UART sound-level module
+does not provide enough audio data to classify accent groups.
+
+Train the accent model first:
+
+```bash
+cd /path/to/project-srufm/speech_recognition_project
+python main.py train --target accent --model svm --data-dir data/raw --metadata data/metadata.csv --save-dir models
+```
+
+Then run the hardware classifier:
+
+```bash
+cd /path/to/project-srufm
+python3 -u hardware/accent_hardware_runner.py
+```
+
+When the button is pressed:
+
+1. The LED turns on.
+2. The Pi records a short audio clip from the microphone.
+3. The trained accent classifier predicts one of `coastal`, `nairobi`, or
+   `upcountry`.
+4. The result is printed in the terminal.
+
+If the Pi has multiple audio inputs, list them with PyAudio and pass the chosen
+index:
+
+```bash
+python3 - <<'PY'
+import pyaudio
+pa = pyaudio.PyAudio()
+for i in range(pa.get_device_count()):
+    info = pa.get_device_info_by_index(i)
+    if info.get("maxInputChannels", 0) > 0:
+        print(i, info["name"])
+pa.terminate()
+PY
+
+python3 -u hardware/accent_hardware_runner.py --device-index 1
 ```
