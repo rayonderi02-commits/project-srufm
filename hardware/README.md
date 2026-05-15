@@ -54,6 +54,13 @@ cd /path/to/project-srufm/speech_recognition_project
 python main.py train --target accent --model svm --data-dir data/raw --metadata data/metadata.csv --save-dir models
 ```
 
+The metadata must contain labelled examples for the three target accent groups:
+`coastal`, `nairobi`, and `upcountry`. The runner looks for these trained files:
+
+- `speech_recognition_project/models/accent_svm_model.joblib`
+- `speech_recognition_project/models/accent_scaler.joblib`
+- `speech_recognition_project/models/accent_label_encoder.joblib`
+
 Then run the hardware classifier:
 
 ```bash

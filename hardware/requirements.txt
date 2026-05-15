@@ -1,0 +1,8 @@
+# Raspberry Pi hardware runner dependencies
+#
+# Install from the repository root with:
+#   pip install -r speech_recognition_project/requirements.txt
+#   pip install -r hardware/requirements.txt
+
+RPi.GPIO>=0.7.1
+pyaudio>=0.2.14
