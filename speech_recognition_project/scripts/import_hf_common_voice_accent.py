@@ -151,7 +151,8 @@ def import_rows(
                 )
                 if audio_path is None:
                     continue
-                rows.append(_row_to_metadata(row, audio_path, data_dir, split, accent))
+                row_split = "test" if counts[accent] % 5 == 0 else "train"
+                rows.append(_row_to_metadata(row, audio_path, data_dir, row_split, accent))
                 counts[accent] += 1
             print("Counts:", counts)
 
