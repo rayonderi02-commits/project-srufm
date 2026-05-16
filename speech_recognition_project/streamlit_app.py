@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -52,7 +53,12 @@ def _load_svm_engine(model_path: Path, scaler_path: Path, encoder_path: Path) ->
     model = SVMModel().load(model_path)
     scaler = joblib.load(scaler_path)
     label_encoder = joblib.load(encoder_path)
-    return InferenceEngine(model=model, scaler=scaler, label_encoder=label_encoder)
+    return InferenceEngine(
+        model=model,
+        scaler=scaler,
+        label_encoder=label_encoder,
+        silence_threshold_db=55.0,
+    )
 
 
 def _artifact_exists(*paths: Path) -> bool:
@@ -89,6 +95,33 @@ def _record_from_pi_mic(duration: float, device_index: int) -> str:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         sf.write(tmp.name, audio, 16000)
         return tmp.name
+
+
+def _audio_level_summary(audio: np.ndarray, sample_rate: int = 16000) -> dict[str, float]:
+    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    rms = float(np.sqrt(np.mean(audio**2))) if len(audio) else 0.0
+    rms_db = float(20 * np.log10(rms + 1e-9))
+    return {
+        "duration": len(audio) / sample_rate,
+        "peak": peak,
+        "rms_db": rms_db,
+    }
+
+
+def _show_audio_level(path: str) -> None:
+    from src.utils.audio import load_audio
+
+    audio, sample_rate = load_audio(path)
+    summary = _audio_level_summary(audio, sample_rate)
+    cols = st.columns(3)
+    cols[0].metric("Captured seconds", f"{summary['duration']:.2f}")
+    cols[1].metric("Peak level", f"{summary['peak']:.4f}")
+    cols[2].metric("RMS dB", f"{summary['rms_db']:.1f}")
+    if summary["peak"] < 0.01:
+        st.warning(
+            "The recording is extremely quiet. Check the mic mute switch, speak closer, "
+            "or try increasing the recording time."
+        )
 
 
 def _run_demo_recognition(
@@ -274,6 +307,7 @@ with demo_tab:
                     device_index=int(pi_mic_device_index),
                 )
             st.audio(tmp_path)
+            _show_audio_level(tmp_path)
         except Exception as exc:
             st.error(f"Raspberry Pi microphone recording failed: {exc}")
     elif run_uploaded_audio and uploaded_audio is not None:
@@ -281,6 +315,7 @@ with demo_tab:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(uploaded_audio.getbuffer())
             tmp_path = tmp.name
+        _show_audio_level(tmp_path)
 
     if tmp_path is not None:
         _run_demo_recognition(
