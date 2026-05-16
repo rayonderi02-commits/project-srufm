@@ -102,11 +102,21 @@ The training metadata must contain labelled examples for:
 - `nairobi`
 - `upcountry`
 
-Train from the speech project folder:
+For the chosen hybrid path, build metadata first:
 
 ```bash
 cd /home/kiswahili-pi/project-srufm/speech_recognition_project
-python3 main.py train --target accent --model svm --data-dir data/raw --metadata data/accent_metadata.csv --save-dir models
+python3 scripts/build_hybrid_accent_metadata.py \
+  --common-voice-root data/raw/cv-corpus-25.0-2026-03-09/sw \
+  --local-metadata data/accent_metadata.csv \
+  --data-dir data/raw \
+  --output data/hybrid_accent_metadata.csv
+```
+
+Then train from the speech project folder:
+
+```bash
+python3 main.py train --target accent --model svm --data-dir data/raw --metadata data/hybrid_accent_metadata.csv --save-dir models
 ```
 
 ## Run the Integrated Hardware System
