@@ -25,13 +25,20 @@ from src.utils.config import Config
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
-METADATA_CSV = PROJECT_ROOT / "data" / "metadata.csv"
+DEFAULT_METADATA_CSV = PROJECT_ROOT / "data" / "metadata.csv"
+HYBRID_ACCENT_METADATA_CSV = PROJECT_ROOT / "data" / "hybrid_accent_metadata.csv"
+METADATA_CSV = (
+    HYBRID_ACCENT_METADATA_CSV
+    if HYBRID_ACCENT_METADATA_CSV.exists()
+    else DEFAULT_METADATA_CSV
+)
 MODELS_DIR = PROJECT_ROOT / "models"
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 
 
 st.set_page_config(page_title="Kiswahili ASR", layout="wide")
 st.title("Accent-Aware Kiswahili Speech Recognition")
+st.caption(f"Active metadata: {METADATA_CSV}")
 
 
 def _load_svm_engine(model_path: Path, scaler_path: Path, encoder_path: Path) -> InferenceEngine:
