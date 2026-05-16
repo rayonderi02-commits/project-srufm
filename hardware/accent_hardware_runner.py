@@ -112,8 +112,31 @@ def load_accent_engine(
     return InferenceEngine(model=model, scaler=scaler, label_encoder=label_encoder)
 
 
+def _resample_to_target(audio: np.ndarray, source_rate: int) -> np.ndarray:
+    """Resample recorded audio to the model's expected 16 kHz sample rate."""
+    if source_rate == SAMPLE_RATE:
+        return audio
+
+    try:
+        import librosa
+
+        return librosa.resample(
+            y=audio,
+            orig_sr=source_rate,
+            target_sr=SAMPLE_RATE,
+        ).astype(np.float32)
+    except ImportError:
+        from scipy.signal import resample_poly
+        from math import gcd
+
+        divisor = gcd(source_rate, SAMPLE_RATE)
+        up = SAMPLE_RATE // divisor
+        down = source_rate // divisor
+        return resample_poly(audio, up, down).astype(np.float32)
+
+
 def record_audio(duration: float, device_index: int | None = None) -> np.ndarray:
-    """Record mono 16 kHz audio from PyAudio and return float32 samples."""
+    """Record mono audio from PyAudio and return 16 kHz float32 samples."""
     try:
         import pyaudio
     except ImportError as exc:
@@ -126,23 +149,30 @@ def record_audio(duration: float, device_index: int | None = None) -> np.ndarray
     pa = pyaudio.PyAudio()
     stream = None
     try:
+        if device_index is None:
+            device_info = pa.get_default_input_device_info()
+        else:
+            device_info = pa.get_device_info_by_index(device_index)
+        source_rate = int(float(device_info.get("defaultSampleRate", SAMPLE_RATE)))
+
         stream = pa.open(
             format=pyaudio.paInt16,
             channels=CHANNELS,
-            rate=SAMPLE_RATE,
+            rate=source_rate,
             input=True,
             input_device_index=device_index,
             frames_per_buffer=CHUNK_SIZE,
         )
 
         frames: list[bytes] = []
-        chunks = int(SAMPLE_RATE / CHUNK_SIZE * duration)
+        chunks = int(source_rate / CHUNK_SIZE * duration)
         for _ in range(chunks):
             frames.append(stream.read(CHUNK_SIZE, exception_on_overflow=False))
 
         raw = b"".join(frames)
         samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-        return samples / 32768.0
+        audio = samples / 32768.0
+        return _resample_to_target(audio, source_rate)
     finally:
         if stream is not None:
             stream.stop_stream()
