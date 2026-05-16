@@ -1,6 +1,6 @@
 """Raspberry Pi button-to-accent-classifier runner.
 
-Press the hardware button to record a short utterance from the system audio
+Press the hardware button to record a short utterance from a USB/system audio
 input, then classify the speaker accent with the trained accent model.
 """
 
@@ -150,6 +150,27 @@ def record_audio(duration: float, device_index: int | None = None) -> np.ndarray
         pa.terminate()
 
 
+def list_audio_input_devices() -> None:
+    """Print available PyAudio input devices and exit."""
+    try:
+        import pyaudio
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyAudio is required to list microphone devices. Install it with:\n"
+            "  sudo apt install portaudio19-dev python3-pyaudio\n"
+            "or: pip install pyaudio"
+        ) from exc
+
+    pa = pyaudio.PyAudio()
+    try:
+        for index in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(index)
+            if int(info.get("maxInputChannels", 0)) > 0:
+                print(f"{index}: {info['name']}")
+    finally:
+        pa.terminate()
+
+
 def wait_for_press(gpio: GpioController, poll_interval: float = 0.05) -> None:
     while not gpio.is_button_pressed():
         time.sleep(poll_interval)
@@ -193,7 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--device-index",
         type=int,
         default=None,
-        help="Optional PyAudio input device index.",
+        help="Optional PyAudio input device index for the USB microphone.",
+    )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="List available audio input devices and exit.",
     )
     parser.add_argument("--led-pin", type=int, default=LED_PIN)
     parser.add_argument("--buzzer-pin", type=int, default=BUZZER_PIN)
@@ -205,6 +231,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = build_parser().parse_args()
 
+    if args.list_devices:
+        list_audio_input_devices()
+        return
+
     engine = load_accent_engine(args.model_path, args.scaler_path, args.encoder_path)
     gpio = GpioController(
         led_pin=args.led_pin,
@@ -212,7 +242,11 @@ def main() -> None:
         button_pin=args.button_pin,
     )
 
-    logger.info("Ready. Press the button, speak for %.1f seconds, then wait.", args.duration)
+    logger.info(
+        "Ready. Press the button, speak into the USB microphone for %.1f seconds, "
+        "then wait for the accent result.",
+        args.duration,
+    )
     try:
         while True:
             wait_for_press(gpio)

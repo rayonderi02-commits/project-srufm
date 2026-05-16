@@ -1,14 +1,16 @@
-# Raspberry Pi Hardware Controller
+# Raspberry Pi USB Microphone Accent Classifier
 
-This folder contains the Raspberry Pi GPIO/UART controller used with the
-Kiswahili speech hardware prototype.
+This folder contains the Raspberry Pi hardware runner for the Kiswahili accent
+classification prototype. The UART microphone has been removed. The system now
+uses a USB microphone to capture real waveform audio for MFCC feature extraction
+and accent classification.
 
 ## Files
 
-- `main.py` - reads a push button, enables microphone listening over UART, and
-  drives an LED/buzzer indicator.
-- `accent_hardware_runner.py` - records real microphone audio when the button is
-  pressed and classifies the speaker accent with the trained ASR model.
+- `main.py` - primary Raspberry Pi entrypoint.
+- `accent_hardware_runner.py` - records USB microphone audio when the button is
+  pressed, then classifies the speaker accent.
+- `requirements.txt` - Raspberry Pi hardware/audio dependencies.
 
 ## Current Pin Mapping
 
@@ -19,76 +21,77 @@ The Python script uses BCM GPIO numbering:
 | LED | GPIO17 | Pin 11 |
 | Buzzer | GPIO22 | Pin 15 |
 | Push button | GPIO27 | Pin 13 |
-| UART TX | GPIO14 | Pin 8 |
-| UART RX | GPIO15 | Pin 10 |
+| USB microphone | USB port | USB port |
 
 The push button should connect GPIO27 to GND when pressed. The script enables
 the internal pull-up resistor, so a pressed button reads LOW.
 
-## UART Note
+## Install Dependencies
 
-GPIO14 and GPIO15 are reserved for `/dev/ttyS0`. Do not connect the LED,
-buzzer, or push button to physical pins 8 or 10 while the microphone is using
-UART.
-
-Power the microphone from 3.3V unless the exact module requires 5V and has safe
-3.3V UART logic or a level shifter.
-
-## Sound-Level Demo
+From the repository root on the Raspberry Pi:
 
 ```bash
-cd /path/to/project-srufm/hardware
-python3 -u main.py
+cd /home/kiswahili-pi/project-srufm
+sudo apt update
+sudo apt install -y portaudio19-dev python3-pyaudio python3-rpi.gpio
+pip install -r speech_recognition_project/requirements.txt
+pip install -r hardware/requirements.txt
 ```
 
-## Accent Classification Runner
+## Confirm the USB Microphone
 
-Accent classification needs real waveform audio, such as a USB microphone, I2S
-microphone, or ALSA/PyAudio-compatible audio input. A UART sound-level module
-does not provide enough audio data to classify accent groups.
-
-Train the accent model first:
+List ALSA recording devices:
 
 ```bash
-cd /path/to/project-srufm/speech_recognition_project
-python main.py train --target accent --model svm --data-dir data/raw --metadata data/metadata.csv --save-dir models
+arecord -l
 ```
 
-The metadata must contain labelled examples for the three target accent groups:
-`coastal`, `nairobi`, and `upcountry`. The runner looks for these trained files:
+List PyAudio input devices:
+
+```bash
+python3 -u hardware/main.py --list-devices
+```
+
+If multiple inputs appear, run the classifier with the USB microphone index:
+
+```bash
+python3 -u hardware/main.py --device-index 1
+```
+
+## Train the Accent Model
+
+The runner needs trained accent-classifier artifacts:
 
 - `speech_recognition_project/models/accent_svm_model.joblib`
 - `speech_recognition_project/models/accent_scaler.joblib`
 - `speech_recognition_project/models/accent_label_encoder.joblib`
 
-Then run the hardware classifier:
+The training metadata must contain labelled examples for:
+
+- `coastal`
+- `nairobi`
+- `upcountry`
+
+Train from the speech project folder:
 
 ```bash
-cd /path/to/project-srufm
-python3 -u hardware/accent_hardware_runner.py
+cd /home/kiswahili-pi/project-srufm/speech_recognition_project
+python3 main.py train --target accent --model svm --data-dir data/raw --metadata data/metadata.csv --save-dir models
+```
+
+## Run the Integrated Hardware System
+
+```bash
+cd /home/kiswahili-pi/project-srufm
+python3 -u hardware/main.py
 ```
 
 When the button is pressed:
 
 1. The LED turns on.
-2. The Pi records a short audio clip from the microphone.
-3. The trained accent classifier predicts one of `coastal`, `nairobi`, or
+2. The Pi records audio from the USB microphone.
+3. The MFCC pipeline extracts speech features.
+4. The trained accent model classifies the speaker as `coastal`, `nairobi`, or
    `upcountry`.
-4. The result is printed in the terminal.
-
-If the Pi has multiple audio inputs, list them with PyAudio and pass the chosen
-index:
-
-```bash
-python3 - <<'PY'
-import pyaudio
-pa = pyaudio.PyAudio()
-for i in range(pa.get_device_count()):
-    info = pa.get_device_info_by_index(i)
-    if info.get("maxInputChannels", 0) > 0:
-        print(i, info["name"])
-pa.terminate()
-PY
-
-python3 -u hardware/accent_hardware_runner.py --device-index 1
-```
+5. The result and confidence are printed in the terminal.
+6. The buzzer gives feedback after classification.
