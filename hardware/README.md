@@ -10,6 +10,8 @@ and accent classification.
 - `main.py` - primary Raspberry Pi entrypoint.
 - `accent_hardware_runner.py` - records USB microphone audio when the button is
   pressed, then classifies the speaker accent.
+- `collect_accent_samples.py` - records labelled training samples and appends
+  rows to the training metadata CSV.
 - `requirements.txt` - Raspberry Pi hardware/audio dependencies.
 
 ## Current Pin Mapping
@@ -58,9 +60,28 @@ If multiple inputs appear, run the classifier with the USB microphone index:
 python3 -u hardware/main.py --device-index 1
 ```
 
+## Collect Accent Training Samples
+
+The checked-in sample metadata does not contain the three target labels yet. Use
+the USB microphone to collect labelled examples from real speakers before
+training.
+
+Record examples like this:
+
+```bash
+cd /home/kiswahili-pi/project-srufm
+python3 -u hardware/collect_accent_samples.py --accent coastal --speaker-id coastal_001 --word ndiyo --samples 5 --device-index 1
+python3 -u hardware/collect_accent_samples.py --accent nairobi --speaker-id nairobi_001 --word ndiyo --samples 5 --device-index 1
+python3 -u hardware/collect_accent_samples.py --accent upcountry --speaker-id upcountry_001 --word ndiyo --samples 5 --device-index 1
+```
+
+Repeat this for several words and several speakers per accent. For a useful
+prototype, collect at least 30-50 recordings per accent. Better results need more
+speakers, not just more repeats from one person.
+
 ## Train the Accent Model
 
-The runner needs trained accent-classifier artifacts:
+The runner needs these trained accent-classifier artifacts:
 
 - `speech_recognition_project/models/accent_svm_model.joblib`
 - `speech_recognition_project/models/accent_scaler.joblib`
