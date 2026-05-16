@@ -7,7 +7,9 @@ input, then classify the speaker accent with the trained accent model.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,6 +35,24 @@ CHANNELS = 1
 CHUNK_SIZE = 1024
 
 logger = logging.getLogger("accent_hardware_runner")
+
+
+@contextlib.contextmanager
+def suppress_alsa_stderr():
+    """Hide noisy ALSA/JACK probing messages printed by PyAudio."""
+    if os.environ.get("SHOW_ALSA_WARNINGS"):
+        yield
+        return
+
+    stderr_fd = sys.stderr.fileno()
+    saved_stderr_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_stderr_fd, stderr_fd)
+        os.close(saved_stderr_fd)
 
 
 class GpioController:
@@ -146,23 +166,26 @@ def record_audio(duration: float, device_index: int | None = None) -> np.ndarray
             "or: pip install pyaudio"
         ) from exc
 
-    pa = pyaudio.PyAudio()
+    with suppress_alsa_stderr():
+        pa = pyaudio.PyAudio()
     stream = None
     try:
-        if device_index is None:
-            device_info = pa.get_default_input_device_info()
-        else:
-            device_info = pa.get_device_info_by_index(device_index)
+        with suppress_alsa_stderr():
+            if device_index is None:
+                device_info = pa.get_default_input_device_info()
+            else:
+                device_info = pa.get_device_info_by_index(device_index)
         source_rate = int(float(device_info.get("defaultSampleRate", SAMPLE_RATE)))
 
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=source_rate,
-            input=True,
-            input_device_index=device_index,
-            frames_per_buffer=CHUNK_SIZE,
-        )
+        with suppress_alsa_stderr():
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=source_rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=CHUNK_SIZE,
+            )
 
         frames: list[bytes] = []
         chunks = int(source_rate / CHUNK_SIZE * duration)
@@ -191,7 +214,8 @@ def list_audio_input_devices() -> None:
             "or: pip install pyaudio"
         ) from exc
 
-    pa = pyaudio.PyAudio()
+    with suppress_alsa_stderr():
+        pa = pyaudio.PyAudio()
     try:
         for index in range(pa.get_device_count()):
             info = pa.get_device_info_by_index(index)

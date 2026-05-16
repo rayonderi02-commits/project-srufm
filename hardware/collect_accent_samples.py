@@ -78,7 +78,7 @@ def _load_words(word: str | None, words_file: Path | None) -> list[str]:
 
 def _countdown() -> None:
     for count in (3, 2, 1):
-        print(count)
+        print(count, flush=True)
         time.sleep(0.7)
 
 
@@ -146,19 +146,20 @@ def main() -> None:
 
     print(
         f"Recording {args.samples} sample(s) per word for accent={args.accent}, "
-        f"speaker={args.speaker_id}"
+        f"speaker={args.speaker_id}",
+        flush=True,
     )
-    print(f"Words: {', '.join(words)}")
-    print("Speak only the displayed word after each countdown.")
+    print(f"Words: {', '.join(words)}", flush=True)
+    print("Speak only the displayed word after each countdown.", flush=True)
 
     total = len(words) * args.samples
     recorded = 0
     for word in words:
         for sample_number in range(1, args.samples + 1):
             recorded += 1
-            print(f"\n[{recorded}/{total}] Word: {word} | Take {sample_number}")
+            print(f"\n[{recorded}/{total}] Word: {word} | Take {sample_number}", flush=True)
             _countdown()
-            print("Speak now...")
+            print("Speak now...", flush=True)
 
             audio = record_audio(duration=args.duration, device_index=args.device_index)
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -180,9 +181,9 @@ def main() -> None:
                 "split": split,
             }
             _append_row(metadata_path, row)
-            print(f"Saved {audio_path} [{split}]")
+            print(f"Saved {audio_path} [{split}]", flush=True)
 
-    print(f"Updated metadata: {metadata_path}")
+    print(f"Updated metadata: {metadata_path}", flush=True)
 
 
 if __name__ == "__main__":
