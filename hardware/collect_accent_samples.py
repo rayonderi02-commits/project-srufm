@@ -22,6 +22,7 @@ from hardware.accent_hardware_runner import SAMPLE_RATE, record_audio  # noqa: E
 
 
 VALID_ACCENTS = ("coastal", "nairobi", "upcountry")
+DEFAULT_WORDS_FILE = Path(__file__).resolve().parent / "prompt_words.txt"
 METADATA_COLUMNS = (
     "file_path",
     "word_label",
@@ -56,22 +57,54 @@ def _append_row(path: Path, row: dict[str, str | float]) -> None:
         writer.writerow(row)
 
 
+def _load_words(word: str | None, words_file: Path | None) -> list[str]:
+    if word:
+        return [word.strip().lower()]
+
+    path = words_file or DEFAULT_WORDS_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"Words file not found: {path}")
+
+    words = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            words.append(line.lower())
+
+    if not words:
+        raise ValueError(f"Words file has no usable prompts: {path}")
+    return words
+
+
+def _countdown() -> None:
+    for count in (3, 2, 1):
+        print(count)
+        time.sleep(0.7)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record labelled USB microphone samples for accent training."
     )
     parser.add_argument("--accent", required=True, choices=VALID_ACCENTS)
+    parser.add_argument("--word", help="Single prompt word, for example 'ndiyo'.")
     parser.add_argument(
-        "--word",
-        required=True,
-        help="Prompt word or phrase being spoken, for example 'ndiyo'.",
+        "--words-file",
+        type=Path,
+        default=None,
+        help="Prompt list file. Defaults to hardware/prompt_words.txt.",
     )
     parser.add_argument(
         "--speaker-id",
         required=True,
         help="Anonymous speaker id, for example coastal_001.",
     )
-    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=2,
+        help="Number of recordings per word.",
+    )
     parser.add_argument("--duration", type=float, default=2.5)
     parser.add_argument(
         "--device-index",
@@ -105,44 +138,49 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    words = _load_words(args.word, args.words_file)
     metadata_path = _metadata_path(args.metadata)
     data_dir = args.data_dir
     output_dir = data_dir / args.accent / args.speaker_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"Recording {args.samples} sample(s) for accent={args.accent}, "
-        f"word={args.word}, speaker={args.speaker_id}"
+        f"Recording {args.samples} sample(s) per word for accent={args.accent}, "
+        f"speaker={args.speaker_id}"
     )
-    print("Speak clearly after each countdown.")
+    print(f"Words: {', '.join(words)}")
+    print("Speak only the displayed word after each countdown.")
 
-    for sample_number in range(1, args.samples + 1):
-        for count in (3, 2, 1):
-            print(count)
-            time.sleep(0.7)
-        print("Speak now...")
+    total = len(words) * args.samples
+    recorded = 0
+    for word in words:
+        for sample_number in range(1, args.samples + 1):
+            recorded += 1
+            print(f"\n[{recorded}/{total}] Word: {word} | Take {sample_number}")
+            _countdown()
+            print("Speak now...")
 
-        audio = record_audio(duration=args.duration, device_index=args.device_index)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        safe_word = "".join(ch if ch.isalnum() else "_" for ch in args.word.lower())
-        filename = (
-            f"{args.speaker_id}_{args.accent}_{safe_word}_"
-            f"{timestamp}_{sample_number:03d}.wav"
-        )
-        audio_path = output_dir / filename
-        sf.write(audio_path, audio, SAMPLE_RATE)
+            audio = record_audio(duration=args.duration, device_index=args.device_index)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            safe_word = "".join(ch if ch.isalnum() else "_" for ch in word.lower())
+            filename = (
+                f"{args.speaker_id}_{args.accent}_{safe_word}_"
+                f"{timestamp}_{sample_number:03d}.wav"
+            )
+            audio_path = output_dir / filename
+            sf.write(audio_path, audio, SAMPLE_RATE)
 
-        split = "test" if random.random() < args.test_probability else "train"
-        row = {
-            "file_path": _relative_to_data_dir(audio_path, data_dir),
-            "word_label": args.word,
-            "accent_label": args.accent,
-            "speaker_id": args.speaker_id,
-            "duration_sec": f"{len(audio) / SAMPLE_RATE:.3f}",
-            "split": split,
-        }
-        _append_row(metadata_path, row)
-        print(f"Saved {audio_path} [{split}]")
+            split = "test" if random.random() < args.test_probability else "train"
+            row = {
+                "file_path": _relative_to_data_dir(audio_path, data_dir),
+                "word_label": word,
+                "accent_label": args.accent,
+                "speaker_id": args.speaker_id,
+                "duration_sec": f"{len(audio) / SAMPLE_RATE:.3f}",
+                "split": split,
+            }
+            _append_row(metadata_path, row)
+            print(f"Saved {audio_path} [{split}]")
 
     print(f"Updated metadata: {metadata_path}")
 

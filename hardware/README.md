@@ -12,6 +12,7 @@ and accent classification.
   pressed, then classifies the speaker accent.
 - `collect_accent_samples.py` - records labelled training samples and appends
   rows to the training metadata CSV.
+- `prompt_words.txt` - balanced isolated-word prompt list for data collection.
 - `requirements.txt` - Raspberry Pi hardware/audio dependencies.
 
 ## Current Pin Mapping
@@ -70,14 +71,22 @@ Record examples like this:
 
 ```bash
 cd /home/kiswahili-pi/project-srufm
-python3 -u hardware/collect_accent_samples.py --accent coastal --speaker-id coastal_001 --word ndiyo --samples 5 --device-index 1
-python3 -u hardware/collect_accent_samples.py --accent nairobi --speaker-id nairobi_001 --word ndiyo --samples 5 --device-index 1
-python3 -u hardware/collect_accent_samples.py --accent upcountry --speaker-id upcountry_001 --word ndiyo --samples 5 --device-index 1
+python3 -u hardware/collect_accent_samples.py --accent coastal --speaker-id coastal_001 --samples 2 --device-index 1
+python3 -u hardware/collect_accent_samples.py --accent nairobi --speaker-id nairobi_001 --samples 2 --device-index 1
+python3 -u hardware/collect_accent_samples.py --accent upcountry --speaker-id upcountry_001 --samples 2 --device-index 1
 ```
 
-Repeat this for several words and several speakers per accent. For a useful
-prototype, collect at least 30-50 recordings per accent. Better results need more
-speakers, not just more repeats from one person.
+The default prompt list has 20 words, so `--samples 2` records 40 clips for that
+speaker. For a first usable prototype, record at least one speaker per accent.
+For a better model, record several speakers per accent using new speaker ids,
+for example `nairobi_002`, `nairobi_003`, and so on.
+
+Default words:
+
+```text
+ndiyo, hapana, msaada, akaunti, malipo, bima, salio, huduma, namba, simu,
+moja, mbili, tatu, nne, tano, sita, saba, nane, tisa, sifuri
+```
 
 ## Train the Accent Model
 
