@@ -199,6 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Metadata from USB microphone recordings.",
     )
     parser.add_argument(
+        "--extra-metadata",
+        type=Path,
+        action="append",
+        default=[],
+        help="Additional trainer-compatible metadata CSV to merge.",
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         default=Path("data/raw"),
@@ -229,6 +236,8 @@ def main() -> None:
             )
         )
     rows.extend(_load_local_metadata(args.local_metadata))
+    for metadata_path in args.extra_metadata:
+        rows.extend(_load_local_metadata(metadata_path))
     rows = _dedupe(rows)
 
     if not rows:
