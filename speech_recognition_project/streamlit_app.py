@@ -88,10 +88,20 @@ def _word_prompts(metadata_path: Path, encoder_path: Path) -> list[str]:
 
 
 def _record_from_pi_mic(duration: float, device_index: int) -> str:
-    from accent_hardware_runner import record_audio
+    from accent_hardware_runner import GpioController, record_audio
     import soundfile as sf
 
-    audio = record_audio(duration=duration, device_index=device_index)
+    gpio = None
+    try:
+        gpio = GpioController()
+        gpio.led(True)
+        gpio.beep(count=1, duration=0.08)
+        audio = record_audio(duration=duration, device_index=device_index)
+    finally:
+        if gpio is not None:
+            gpio.led(False)
+            gpio.cleanup()
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         sf.write(tmp.name, audio, 16000)
         return tmp.name
