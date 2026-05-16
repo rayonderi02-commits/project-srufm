@@ -97,7 +97,7 @@ Train from the speech project folder:
 
 ```bash
 cd /home/kiswahili-pi/project-srufm/speech_recognition_project
-python3 main.py train --target accent --model svm --data-dir data/raw --metadata data/metadata.csv --save-dir models
+python3 main.py train --target accent --model svm --data-dir data/raw --metadata data/accent_metadata.csv --save-dir models
 ```
 
 ## Run the Integrated Hardware System

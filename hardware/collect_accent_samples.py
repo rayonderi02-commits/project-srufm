@@ -33,7 +33,7 @@ METADATA_COLUMNS = (
 
 
 def _metadata_path(path: Path | None) -> Path:
-    return path or ASR_ROOT / "data" / "metadata.csv"
+    return path or ASR_ROOT / "data" / "accent_metadata.csv"
 
 
 def _relative_to_data_dir(path: Path, data_dir: Path) -> str:
@@ -89,7 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata",
         type=Path,
         default=None,
-        help="Metadata CSV to append. Defaults to speech_recognition_project/data/metadata.csv.",
+        help=(
+            "Metadata CSV to append. Defaults to "
+            "speech_recognition_project/data/accent_metadata.csv."
+        ),
     )
     parser.add_argument(
         "--test-probability",
