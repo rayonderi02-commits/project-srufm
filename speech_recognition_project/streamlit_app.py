@@ -167,7 +167,7 @@ def _run_demo_recognition(
             result_cols = st.columns(4)
             result_cols[0].metric("Prompt word", selected_word or "Not selected")
             result_cols[1].metric("Recognized text", word_result.predicted_word)
-            result_cols[2].metric("Word confidence", f"{word_result.confidence:.3f}")
+            result_cols[2].metric("Word confidence", f"{word_result.confidence * 100:.1f}%")
             result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
             st.caption("Word alternatives")
             st.dataframe(
@@ -184,12 +184,24 @@ def _run_demo_recognition(
             if accent_result.is_error:
                 st.error(accent_result.error)
             else:
-                st.metric("Speaker accent group", accent_result.predicted_word)
+                result_cols = st.columns(2)
+                result_cols[0].metric("Speaker accent group", accent_result.predicted_word)
+                result_cols[1].metric(
+                    "Model confidence",
+                    f"{accent_result.confidence * 100:.1f}%",
+                )
                 probabilities = pd.DataFrame(
                     accent_result.top_k,
                     columns=["accent_group", "probability"],
                 )
+                probabilities["percentage"] = probabilities["probability"] * 100
                 st.bar_chart(probabilities.set_index("accent_group"))
+                st.dataframe(
+                    probabilities[["accent_group", "percentage"]].rename(
+                        columns={"accent_group": "Accent", "percentage": "Confidence %"}
+                    ),
+                    use_container_width=True,
+                )
         except Exception as exc:
             st.error(f"Accent classification failed: {exc}")
     else:
