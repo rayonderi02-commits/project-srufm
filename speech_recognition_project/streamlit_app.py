@@ -287,7 +287,14 @@ with demo_tab:
         value=DEFAULT_PI_MIC_DEVICE_INDEX,
         step=1,
     )
-    run_pi_mic = st.button("Record From Raspberry Pi USB Mic", type="primary")
+    action_cols = st.columns(2)
+    run_pi_mic = action_cols[0].button(
+        "Record From Raspberry Pi USB Mic",
+        type="primary",
+        use_container_width=True,
+    )
+    if action_cols[1].button("Next Speaker / Clear Result", use_container_width=True):
+        st.rerun()
 
     st.divider()
     st.subheader("Fallback Audio Input")
