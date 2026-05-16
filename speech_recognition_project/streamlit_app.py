@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 from pathlib import Path
 
 import joblib
@@ -24,6 +25,11 @@ from src.utils.config import Config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT.parent
+HARDWARE_ROOT = REPO_ROOT / "hardware"
+if str(HARDWARE_ROOT) not in sys.path:
+    sys.path.insert(0, str(HARDWARE_ROOT))
+
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 DEFAULT_METADATA_CSV = PROJECT_ROOT / "data" / "metadata.csv"
 HYBRID_ACCENT_METADATA_CSV = PROJECT_ROOT / "data" / "hybrid_accent_metadata.csv"
@@ -34,6 +40,7 @@ METADATA_CSV = (
 )
 MODELS_DIR = PROJECT_ROOT / "models"
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
+DEFAULT_PI_MIC_DEVICE_INDEX = 1
 
 
 st.set_page_config(page_title="Kiswahili ASR", layout="wide")
@@ -72,6 +79,81 @@ def _word_prompts(metadata_path: Path, encoder_path: Path) -> list[str]:
         if "word_label" in frame.columns:
             return sorted(frame["word_label"].dropna().astype(str).unique())
     return []
+
+
+def _record_from_pi_mic(duration: float, device_index: int) -> str:
+    from accent_hardware_runner import record_audio
+    import soundfile as sf
+
+    audio = record_audio(duration=duration, device_index=device_index)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        sf.write(tmp.name, audio, 16000)
+        return tmp.name
+
+
+def _run_demo_recognition(
+    tmp_path: str,
+    selected_word: str,
+    word_ready: bool,
+    accent_ready: bool,
+    word_model_path: Path,
+    word_scaler_path: Path,
+    word_encoder_path: Path,
+    accent_model_path: Path,
+    accent_scaler_path: Path,
+    accent_encoder_path: Path,
+) -> None:
+    if not word_ready:
+        st.info("Word model artifacts are missing, so this run will classify accent only.")
+    else:
+        try:
+            word_engine = _load_svm_engine(word_model_path, word_scaler_path, word_encoder_path)
+            word_result = word_engine.predict_from_file(tmp_path)
+        except Exception as exc:
+            word_result = None
+            st.error(f"Word recognition failed: {exc}")
+
+        if word_result and word_result.is_error:
+            st.error(word_result.error)
+        elif word_result:
+            is_match = (
+                selected_word.strip().lower() == word_result.predicted_word.strip().lower()
+                if selected_word
+                else False
+            )
+            result_cols = st.columns(4)
+            result_cols[0].metric("Prompt word", selected_word or "Not selected")
+            result_cols[1].metric("Recognized text", word_result.predicted_word)
+            result_cols[2].metric("Word confidence", f"{word_result.confidence:.3f}")
+            result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
+            st.caption("Word alternatives")
+            st.dataframe(
+                pd.DataFrame(word_result.top_k, columns=["word", "probability"]),
+                use_container_width=True,
+            )
+
+    st.divider()
+    st.subheader("Accent Group")
+    if accent_ready:
+        try:
+            accent_engine = _load_svm_engine(accent_model_path, accent_scaler_path, accent_encoder_path)
+            accent_result = accent_engine.predict_from_file(tmp_path)
+            if accent_result.is_error:
+                st.error(accent_result.error)
+            else:
+                st.metric("Speaker accent group", accent_result.predicted_word)
+                probabilities = pd.DataFrame(
+                    accent_result.top_k,
+                    columns=["accent_group", "probability"],
+                )
+                st.bar_chart(probabilities.set_index("accent_group"))
+        except Exception as exc:
+            st.error(f"Accent classification failed: {exc}")
+    else:
+        st.info(
+            "No trained accent classifier is available yet. Add examples labelled "
+            "`coastal`, `nairobi`, and `upcountry`, then train target `accent`."
+        )
 
 
 def _pipeline_steps() -> None:
@@ -157,73 +239,62 @@ with demo_tab:
     st.markdown(f"### Pronounce: `{selected_word or 'choose a word'}`")
     st.caption("Ask the speaker to say this word once, clearly, then run recognition.")
 
-    recorded_audio = None
-    if hasattr(st, "audio_input"):
-        recorded_audio = st.audio_input("Record speaker audio")
+    st.subheader("Raspberry Pi USB Microphone")
+    mic_cols = st.columns(2)
+    pi_mic_duration = mic_cols[0].number_input(
+        "Recording seconds",
+        min_value=1.0,
+        max_value=10.0,
+        value=2.5,
+        step=0.5,
+    )
+    pi_mic_device_index = mic_cols[1].number_input(
+        "Pi microphone device index",
+        min_value=0,
+        value=DEFAULT_PI_MIC_DEVICE_INDEX,
+        step=1,
+    )
+    run_pi_mic = st.button("Record From Raspberry Pi USB Mic", type="primary")
+
+    st.divider()
+    st.subheader("Fallback Audio Input")
     uploaded_audio = st.file_uploader(
-        "Or upload speaker audio",
+        "Upload speaker audio",
         type=["wav", "mp3", "flac", "ogg", "m4a"],
         help="Use a short recording of the speaker pronouncing the prompt word.",
     )
-    audio_file = recorded_audio or uploaded_audio
+    run_uploaded_audio = st.button("Run Uploaded Audio")
 
-    if st.button("Run Recognition", type="primary") and audio_file is not None:
-        suffix = Path(getattr(audio_file, "name", "recording.wav")).suffix or ".wav"
+    tmp_path = None
+    if run_pi_mic:
+        try:
+            with st.spinner("Recording from the Raspberry Pi USB microphone..."):
+                tmp_path = _record_from_pi_mic(
+                    duration=float(pi_mic_duration),
+                    device_index=int(pi_mic_device_index),
+                )
+            st.audio(tmp_path)
+        except Exception as exc:
+            st.error(f"Raspberry Pi microphone recording failed: {exc}")
+    elif run_uploaded_audio and uploaded_audio is not None:
+        suffix = Path(getattr(uploaded_audio, "name", "recording.wav")).suffix or ".wav"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_file.getbuffer())
+            tmp.write(uploaded_audio.getbuffer())
             tmp_path = tmp.name
 
-        if not word_ready:
-            st.error("Word model artifacts are missing. Train the word recognizer first.")
-        else:
-            try:
-                word_engine = _load_svm_engine(word_model_path, word_scaler_path, word_encoder_path)
-                word_result = word_engine.predict_from_file(tmp_path)
-            except Exception as exc:
-                word_result = None
-                st.error(f"Word recognition failed: {exc}")
-
-            if word_result and word_result.is_error:
-                st.error(word_result.error)
-            elif word_result:
-                is_match = (
-                    selected_word.strip().lower() == word_result.predicted_word.strip().lower()
-                    if selected_word
-                    else False
-                )
-                result_cols = st.columns(4)
-                result_cols[0].metric("Prompt word", selected_word or "Not selected")
-                result_cols[1].metric("Recognized text", word_result.predicted_word)
-                result_cols[2].metric("Word confidence", f"{word_result.confidence:.3f}")
-                result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
-                st.caption("Word alternatives")
-                st.dataframe(
-                    pd.DataFrame(word_result.top_k, columns=["word", "probability"]),
-                    use_container_width=True,
-                )
-
-        st.divider()
-        st.subheader("Accent Group")
-        if accent_ready:
-            try:
-                accent_engine = _load_svm_engine(accent_model_path, accent_scaler_path, accent_encoder_path)
-                accent_result = accent_engine.predict_from_file(tmp_path)
-                if accent_result.is_error:
-                    st.error(accent_result.error)
-                else:
-                    st.metric("Speaker accent group", accent_result.predicted_word)
-                    probabilities = pd.DataFrame(
-                        accent_result.top_k,
-                        columns=["accent_group", "probability"],
-                    )
-                    st.bar_chart(probabilities.set_index("accent_group"))
-            except Exception as exc:
-                st.error(f"Accent classification failed: {exc}")
-        else:
-            st.info(
-                "No trained accent classifier is available yet. Add examples labelled "
-                "`coastal`, `nairobi`, and `upcountry`, then train target `accent`."
-            )
+    if tmp_path is not None:
+        _run_demo_recognition(
+            tmp_path=tmp_path,
+            selected_word=selected_word,
+            word_ready=word_ready,
+            accent_ready=accent_ready,
+            word_model_path=word_model_path,
+            word_scaler_path=word_scaler_path,
+            word_encoder_path=word_encoder_path,
+            accent_model_path=accent_model_path,
+            accent_scaler_path=accent_scaler_path,
+            accent_encoder_path=accent_encoder_path,
+        )
 
 with dataset_tab:
     st.subheader("Dataset Extraction")
