@@ -96,11 +96,20 @@ class GpioController:
             self.buzzer_pin, self.GPIO.HIGH if enabled else self.GPIO.LOW
         )
 
-    def beep(self, count: int = 1, duration: float = 0.12) -> None:
+    def beep(self, count: int = 1, duration: float = 0.12, frequency: int = 2000) -> None:
         for _ in range(count):
-            self.buzzer(True)
-            time.sleep(duration)
-            self.buzzer(False)
+            pwm = None
+            try:
+                pwm = self.GPIO.PWM(self.buzzer_pin, frequency)
+                pwm.start(50)
+                time.sleep(duration)
+            except Exception:
+                self.buzzer(True)
+                time.sleep(duration)
+            finally:
+                if pwm is not None:
+                    pwm.stop()
+                self.buzzer(False)
             time.sleep(duration)
 
     def cleanup(self) -> None:

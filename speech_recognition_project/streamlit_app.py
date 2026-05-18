@@ -99,6 +99,7 @@ def _record_from_pi_mic(duration: float, device_index: int) -> str:
         audio = record_audio(duration=duration, device_index=device_index)
     finally:
         if gpio is not None:
+            gpio.beep(count=2, duration=0.08)
             gpio.led(False)
             gpio.cleanup()
 
