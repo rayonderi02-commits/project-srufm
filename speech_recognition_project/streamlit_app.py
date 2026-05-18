@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import joblib
@@ -40,8 +42,18 @@ METADATA_CSV = (
     else DEFAULT_METADATA_CSV
 )
 MODELS_DIR = PROJECT_ROOT / "models"
+PREDICTION_HISTORY_CSV = PROJECT_ROOT / "data" / "prediction_history.csv"
+LATEST_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_accent_training_report.json"
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 DEFAULT_PI_MIC_DEVICE_INDEX = 1
+METADATA_COLUMNS = [
+    "file_path",
+    "word_label",
+    "accent_label",
+    "speaker_id",
+    "duration_sec",
+    "split",
+]
 
 
 st.set_page_config(page_title="Kiswahili ASR", layout="wide")
@@ -119,7 +131,7 @@ def _audio_level_summary(audio: np.ndarray, sample_rate: int = 16000) -> dict[st
     }
 
 
-def _show_audio_level(path: str) -> None:
+def _show_audio_level(path: str) -> dict[str, float]:
     from src.utils.audio import load_audio
 
     audio, sample_rate = load_audio(path)
@@ -133,10 +145,167 @@ def _show_audio_level(path: str) -> None:
             "The recording is extremely quiet. Check the mic mute switch, speak closer, "
             "or try increasing the recording time."
         )
+    return summary
+
+
+def _load_prediction_history() -> pd.DataFrame:
+    if not PREDICTION_HISTORY_CSV.exists():
+        return pd.DataFrame(
+            columns=[
+                "timestamp",
+                "source",
+                "prompt_word",
+                "predicted_accent",
+                "confidence_percent",
+                "word_prediction",
+                "word_confidence_percent",
+                "audio_peak",
+                "audio_rms_db",
+                "top_predictions",
+                "error",
+                "audio_path",
+            ]
+        )
+    return pd.read_csv(PREDICTION_HISTORY_CSV)
+
+
+def _append_prediction_history(
+    *,
+    audio_path: str,
+    source: str,
+    prompt_word: str,
+    audio_summary: dict[str, float],
+    accent_result,
+    word_result=None,
+) -> None:
+    history = _load_prediction_history()
+    error = accent_result.error if accent_result and accent_result.is_error else ""
+    top_predictions = ""
+    if accent_result and not accent_result.is_error:
+        top_predictions = "; ".join(
+            f"{label}:{probability * 100:.1f}%"
+            for label, probability in accent_result.top_k
+        )
+
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": source,
+        "prompt_word": prompt_word,
+        "predicted_accent": "" if error else accent_result.predicted_word,
+        "confidence_percent": "" if error else round(accent_result.confidence * 100, 2),
+        "word_prediction": (
+            word_result.predicted_word
+            if word_result is not None and not word_result.is_error
+            else ""
+        ),
+        "word_confidence_percent": (
+            round(word_result.confidence * 100, 2)
+            if word_result is not None and not word_result.is_error
+            else ""
+        ),
+        "audio_peak": round(audio_summary.get("peak", 0.0), 5),
+        "audio_rms_db": round(audio_summary.get("rms_db", -180.0), 2),
+        "top_predictions": top_predictions,
+        "error": error,
+        "audio_path": audio_path,
+    }
+    updated = pd.concat([pd.DataFrame([row]), history], ignore_index=True).head(200)
+    PREDICTION_HISTORY_CSV.parent.mkdir(parents=True, exist_ok=True)
+    updated.to_csv(PREDICTION_HISTORY_CSV, index=False)
+
+
+def _render_prediction_history() -> None:
+    st.subheader("Prediction History")
+    history = _load_prediction_history()
+    if history.empty:
+        st.info("No predictions have been recorded yet.")
+        return
+
+    display_columns = [
+        "timestamp",
+        "source",
+        "predicted_accent",
+        "confidence_percent",
+        "audio_peak",
+        "audio_rms_db",
+        "top_predictions",
+        "error",
+    ]
+    available_columns = [column for column in display_columns if column in history.columns]
+    st.dataframe(history[available_columns].head(20), use_container_width=True)
+    if st.button("Clear Prediction History"):
+        PREDICTION_HISTORY_CSV.unlink(missing_ok=True)
+        st.rerun()
+
+
+def _load_trainer_metadata(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=METADATA_COLUMNS)
+    frame = pd.read_csv(path)
+    missing = set(METADATA_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(f"{path} is missing columns: {sorted(missing)}")
+    frame = frame[frame["accent_label"].isin(ACCENT_GROUPS)]
+    return frame[METADATA_COLUMNS]
+
+
+def _rebuild_hybrid_metadata() -> pd.DataFrame:
+    frames = [
+        _load_trainer_metadata(PROJECT_ROOT / "data" / "accent_metadata.csv"),
+        _load_trainer_metadata(PROJECT_ROOT / "data" / "common_voice_accent_metadata.csv"),
+    ]
+    frame = pd.concat(frames, ignore_index=True)
+    if frame.empty:
+        raise ValueError("No accent metadata rows found. Record speakers or import data first.")
+    frame = frame.drop_duplicates(subset=["file_path"]).reset_index(drop=True)
+    HYBRID_ACCENT_METADATA_CSV.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(HYBRID_ACCENT_METADATA_CSV, index=False)
+    return frame
+
+
+def _save_training_report(report: dict) -> None:
+    output = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "accuracy": float(report["accuracy"]),
+        "precision": float(report["precision"]),
+        "recall": float(report["recall"]),
+        "f1": float(report["f1"]),
+        "wer": float(report["wer"]),
+        "per_accent": {
+            str(label): float(value)
+            for label, value in report.get("per_accent", {}).items()
+        },
+    }
+    LATEST_TRAINING_REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    LATEST_TRAINING_REPORT_JSON.write_text(json.dumps(output, indent=2), encoding="utf-8")
+
+
+def _render_latest_training_report() -> None:
+    if not LATEST_TRAINING_REPORT_JSON.exists():
+        return
+    report = json.loads(LATEST_TRAINING_REPORT_JSON.read_text(encoding="utf-8"))
+    st.caption(f"Latest accent training: {report.get('timestamp', 'unknown')}")
+    cols = st.columns(4)
+    cols[0].metric("Accuracy", f"{report.get('accuracy', 0) * 100:.2f}%")
+    cols[1].metric("Precision", f"{report.get('precision', 0) * 100:.2f}%")
+    cols[2].metric("Recall", f"{report.get('recall', 0) * 100:.2f}%")
+    cols[3].metric("F1", f"{report.get('f1', 0) * 100:.2f}%")
+    if report.get("per_accent"):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"accent": accent, "accuracy_percent": accuracy * 100}
+                    for accent, accuracy in report["per_accent"].items()
+                ]
+            ),
+            use_container_width=True,
+        )
 
 
 def _run_demo_recognition(
     tmp_path: str,
+    source: str,
+    audio_summary: dict[str, float],
     selected_word: str,
     word_ready: bool,
     accent_ready: bool,
@@ -147,6 +316,7 @@ def _run_demo_recognition(
     accent_scaler_path: Path,
     accent_encoder_path: Path,
 ) -> None:
+    word_result = None
     if not word_ready:
         st.info("Word model artifacts are missing, so this run will classify accent only.")
     else:
@@ -179,6 +349,7 @@ def _run_demo_recognition(
     st.divider()
     st.subheader("Accent Group")
     if accent_ready:
+        accent_result = None
         try:
             accent_engine = _load_svm_engine(accent_model_path, accent_scaler_path, accent_encoder_path)
             accent_result = accent_engine.predict_from_file(tmp_path)
@@ -202,6 +373,15 @@ def _run_demo_recognition(
                         columns={"accent_group": "Accent", "percentage": "Confidence %"}
                     ),
                     use_container_width=True,
+                )
+            if accent_result is not None:
+                _append_prediction_history(
+                    audio_path=tmp_path,
+                    source=source,
+                    prompt_word=selected_word,
+                    audio_summary=audio_summary,
+                    accent_result=accent_result,
+                    word_result=word_result,
                 )
         except Exception as exc:
             st.error(f"Accent classification failed: {exc}")
@@ -329,6 +509,8 @@ with demo_tab:
     run_uploaded_audio = st.button("Run Uploaded Audio")
 
     tmp_path = None
+    audio_summary = {}
+    audio_source = ""
     if run_pi_mic:
         try:
             with st.spinner("Recording from the Raspberry Pi USB microphone..."):
@@ -336,8 +518,9 @@ with demo_tab:
                     duration=float(pi_mic_duration),
                     device_index=int(pi_mic_device_index),
                 )
+            audio_source = "pi_usb_mic"
             st.audio(tmp_path)
-            _show_audio_level(tmp_path)
+            audio_summary = _show_audio_level(tmp_path)
         except Exception as exc:
             st.error(f"Raspberry Pi microphone recording failed: {exc}")
     elif run_uploaded_audio and uploaded_audio is not None:
@@ -345,11 +528,14 @@ with demo_tab:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(uploaded_audio.getbuffer())
             tmp_path = tmp.name
-        _show_audio_level(tmp_path)
+        audio_source = "uploaded_audio"
+        audio_summary = _show_audio_level(tmp_path)
 
     if tmp_path is not None:
         _run_demo_recognition(
             tmp_path=tmp_path,
+            source=audio_source,
+            audio_summary=audio_summary,
             selected_word=selected_word,
             word_ready=word_ready,
             accent_ready=accent_ready,
@@ -360,6 +546,9 @@ with demo_tab:
             accent_scaler_path=accent_scaler_path,
             accent_encoder_path=accent_encoder_path,
         )
+
+    st.divider()
+    _render_prediction_history()
 
 with dataset_tab:
     st.subheader("Dataset Extraction")
@@ -421,6 +610,48 @@ with dataset_tab:
 with train_tab:
     st.subheader("Model Training")
     _metadata_summary(METADATA_CSV)
+    _render_latest_training_report()
+    st.divider()
+    st.subheader("One-Click Accent Retraining")
+    st.caption(
+        "Rebuilds the hybrid metadata from local recordings and Common Voice support, "
+        "then trains the accent SVM used by the live demo."
+    )
+    if st.button("Rebuild Metadata and Retrain Accent Model", type="primary"):
+        try:
+            with st.spinner("Rebuilding hybrid accent metadata..."):
+                hybrid_frame = _rebuild_hybrid_metadata()
+            st.success(f"Hybrid metadata rebuilt with {len(hybrid_frame):,} rows.")
+            st.dataframe(
+                hybrid_frame["accent_label"].value_counts().rename("rows"),
+                use_container_width=True,
+            )
+
+            config = Config.load(str(PROJECT_ROOT / "config" / "default.yaml"))
+            with st.spinner("Training accent SVM model... this can take a few minutes."):
+                _, report = train_pipeline(
+                    metadata_csv=str(HYBRID_ACCENT_METADATA_CSV),
+                    data_dir=str(RAW_DIR),
+                    model_type="svm",
+                    config=config,
+                    save_dir=str(MODELS_DIR),
+                    target_column="accent_label",
+                )
+            _save_training_report(report)
+            st.success("Accent model retrained and saved.")
+            st.json(
+                {
+                    key: report[key]
+                    for key in ("accuracy", "precision", "recall", "f1", "wer")
+                }
+            )
+            st.caption("Per-accent accuracy")
+            st.json(report["per_accent"])
+            st.info("The next demo prediction will use the newly trained model.")
+        except Exception as exc:
+            st.error(f"Retraining failed: {exc}")
+
+    st.divider()
     target = st.selectbox("Target", ["word", "accent"], index=0)
     if target == "accent":
         ready, accents = _accent_readiness(METADATA_CSV)
