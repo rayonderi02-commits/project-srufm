@@ -29,7 +29,7 @@ from src.models.svm_model import SVMModel  # noqa: E402
 
 LED_PIN = 17
 BUZZER_PIN = 22
-BUTTON_PIN = 27
+BUTTON_PIN = 14
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 CHUNK_SIZE = 1024
