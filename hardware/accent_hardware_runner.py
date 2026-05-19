@@ -63,6 +63,7 @@ class GpioController:
         led_pin: int = LED_PIN,
         buzzer_pin: int = BUZZER_PIN,
         button_pin: int = BUTTON_PIN,
+        buzzer_mode: str = "active",
     ):
         try:
             import RPi.GPIO as GPIO
@@ -76,6 +77,7 @@ class GpioController:
         self.led_pin = led_pin
         self.buzzer_pin = buzzer_pin
         self.button_pin = button_pin
+        self.buzzer_mode = buzzer_mode
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -98,18 +100,20 @@ class GpioController:
 
     def beep(self, count: int = 1, duration: float = 0.12, frequency: int = 2000) -> None:
         for _ in range(count):
-            pwm = None
-            try:
-                pwm = self.GPIO.PWM(self.buzzer_pin, frequency)
-                pwm.start(50)
-                time.sleep(duration)
-            except Exception:
+            if self.buzzer_mode == "active":
                 self.buzzer(True)
                 time.sleep(duration)
-            finally:
-                if pwm is not None:
-                    pwm.stop()
                 self.buzzer(False)
+            else:
+                pwm = None
+                try:
+                    pwm = self.GPIO.PWM(self.buzzer_pin, frequency)
+                    pwm.start(50)
+                    time.sleep(duration)
+                finally:
+                    if pwm is not None:
+                        pwm.stop()
+                    self.buzzer(False)
             time.sleep(duration)
 
     def cleanup(self) -> None:
@@ -212,6 +216,63 @@ def record_audio(duration: float, device_index: int | None = None) -> np.ndarray
         pa.terminate()
 
 
+def record_audio_until_button(
+    gpio: GpioController,
+    device_index: int | None = None,
+    max_duration: float = 10.0,
+) -> np.ndarray:
+    """Record until the button is pressed again, or until max_duration is reached."""
+    try:
+        import pyaudio
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyAudio is required to record waveform audio. Install it with:\n"
+            "  sudo apt install portaudio19-dev python3-pyaudio\n"
+            "or: pip install pyaudio"
+        ) from exc
+
+    with suppress_alsa_stderr():
+        pa = pyaudio.PyAudio()
+    stream = None
+    try:
+        with suppress_alsa_stderr():
+            if device_index is None:
+                device_info = pa.get_default_input_device_info()
+            else:
+                device_info = pa.get_device_info_by_index(device_index)
+        source_rate = int(float(device_info.get("defaultSampleRate", SAMPLE_RATE)))
+
+        with suppress_alsa_stderr():
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=source_rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=CHUNK_SIZE,
+            )
+
+        frames: list[bytes] = []
+        max_chunks = max(1, int(source_rate / CHUNK_SIZE * max_duration))
+        stop_requested = False
+        for _ in range(max_chunks):
+            frames.append(stream.read(CHUNK_SIZE, exception_on_overflow=False))
+            if gpio.is_button_pressed():
+                stop_requested = True
+            elif stop_requested:
+                break
+
+        raw = b"".join(frames)
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        audio = samples / 32768.0
+        return _resample_to_target(audio, source_rate)
+    finally:
+        if stream is not None:
+            stream.stop_stream()
+            stream.close()
+        pa.terminate()
+
+
 def list_audio_input_devices() -> None:
     """Print available PyAudio input devices and exit."""
     try:
@@ -270,8 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--duration",
         type=float,
-        default=2.5,
-        help="Seconds to record after the button is pressed.",
+        default=10.0,
+        help="Maximum seconds to record before auto-stopping.",
     )
     parser.add_argument(
         "--device-index",
@@ -284,9 +345,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available audio input devices and exit.",
     )
+    parser.add_argument(
+        "--test-buzzer",
+        action="store_true",
+        help="Beep the buzzer and exit.",
+    )
     parser.add_argument("--led-pin", type=int, default=LED_PIN)
     parser.add_argument("--buzzer-pin", type=int, default=BUZZER_PIN)
     parser.add_argument("--button-pin", type=int, default=BUTTON_PIN)
+    parser.add_argument(
+        "--buzzer-mode",
+        choices=["active", "passive"],
+        default="active",
+        help="Use active for buzzers that sound on DC HIGH; passive uses PWM tone.",
+    )
     return parser
 
 
@@ -298,26 +370,46 @@ def main() -> None:
         list_audio_input_devices()
         return
 
+    if args.test_buzzer:
+        gpio = GpioController(
+            led_pin=args.led_pin,
+            buzzer_pin=args.buzzer_pin,
+            button_pin=args.button_pin,
+            buzzer_mode=args.buzzer_mode,
+        )
+        try:
+            logger.info("Testing buzzer on GPIO%s in %s mode.", args.buzzer_pin, args.buzzer_mode)
+            gpio.beep(count=3, duration=0.2)
+        finally:
+            gpio.cleanup()
+        return
+
     engine = load_accent_engine(args.model_path, args.scaler_path, args.encoder_path)
     gpio = GpioController(
         led_pin=args.led_pin,
         buzzer_pin=args.buzzer_pin,
         button_pin=args.button_pin,
+        buzzer_mode=args.buzzer_mode,
     )
 
     logger.info(
-        "Ready. Press the button, speak into the USB microphone for %.1f seconds, "
-        "then wait for the accent result.",
+        "Ready. Press the button to start recording, press it again to stop "
+        "(auto-stop after %.1f seconds), then wait for the accent result.",
         args.duration,
     )
     try:
         while True:
             wait_for_press(gpio)
+            wait_for_release(gpio)
             gpio.led(True)
             gpio.beep(count=1, duration=0.08)
-            logger.info("Recording...")
+            logger.info("Recording... press the button again to stop.")
 
-            audio = record_audio(duration=args.duration, device_index=args.device_index)
+            audio = record_audio_until_button(
+                gpio=gpio,
+                device_index=args.device_index,
+                max_duration=args.duration,
+            )
             result = engine._run_pipeline(audio)
 
             gpio.led(False)
