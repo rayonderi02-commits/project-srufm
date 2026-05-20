@@ -49,7 +49,13 @@ def train_pipeline(
     metadata = _load_metadata(metadata_csv)
     _warn_on_accent_imbalance(metadata["accent_label"].to_numpy())
 
-    X, labels, accents, splits = _build_feature_matrix(metadata, data_dir, config)
+    min_duration = 0.25 if target_column == "word_label" else None
+    X, labels, accents, splits = _build_feature_matrix(
+        metadata,
+        data_dir,
+        config,
+        min_duration=min_duration,
+    )
     if target_column == "accent_label":
         labels = accents
 
@@ -109,6 +115,7 @@ def _build_feature_matrix(
     metadata: pd.DataFrame,
     data_dir: str,
     config: Config,
+    min_duration: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     feature_cfg = config.features
     pre_cfg = config.preprocessing
@@ -123,7 +130,7 @@ def _build_feature_matrix(
     reducer = NoiseReducer()
     trimmer = SilenceRemover(
         top_db=pre_cfg.top_db,
-        min_duration=pre_cfg.min_duration,
+        min_duration=pre_cfg.min_duration if min_duration is None else min_duration,
         max_duration=pre_cfg.max_duration,
     )
 

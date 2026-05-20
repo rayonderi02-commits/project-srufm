@@ -56,6 +56,7 @@ class InferenceEngine:
         max_duration: float = 3.0,
         silence_threshold_db: float = 40.0,
         top_k: int = 5,
+        normalize_before_silence_check: bool = False,
     ):
         """
         Args:
@@ -76,6 +77,7 @@ class InferenceEngine:
         self.max_duration = max_duration
         self.silence_threshold_db = silence_threshold_db
         self.top_k = top_k
+        self.normalize_before_silence_check = normalize_before_silence_check
 
         self._noise_reducer = NoiseReducer()
         self._silence_remover = SilenceRemover(
@@ -166,6 +168,12 @@ class InferenceEngine:
         Returns:
             PredictionResult.
         """
+        if self.normalize_before_silence_check:
+            try:
+                audio = self._normalizer.normalize_amplitude(audio)
+            except ValueError as e:
+                return PredictionResult(error=str(e))
+
         # Silence check
         if self._is_silent(audio):
             return PredictionResult(error="No speech detected")

@@ -63,7 +63,12 @@ st.title("Accent-Aware Kiswahili Speech Recognition")
 st.caption(f"Active metadata: {METADATA_CSV}")
 
 
-def _load_svm_engine(model_path: Path, scaler_path: Path, encoder_path: Path) -> InferenceEngine:
+def _load_svm_engine(
+    model_path: Path,
+    scaler_path: Path,
+    encoder_path: Path,
+    min_duration: float = 0.5,
+) -> InferenceEngine:
     model = SVMModel().load(model_path)
     scaler = joblib.load(scaler_path)
     label_encoder = joblib.load(encoder_path)
@@ -71,6 +76,7 @@ def _load_svm_engine(model_path: Path, scaler_path: Path, encoder_path: Path) ->
         model=model,
         scaler=scaler,
         label_encoder=label_encoder,
+        min_duration=min_duration,
         silence_threshold_db=55.0,
     )
 
@@ -341,7 +347,12 @@ def _run_demo_recognition(
         st.info("Word model artifacts are missing, so this run will classify accent only.")
     else:
         try:
-            word_engine = _load_svm_engine(word_model_path, word_scaler_path, word_encoder_path)
+            word_engine = _load_svm_engine(
+                word_model_path,
+                word_scaler_path,
+                word_encoder_path,
+                min_duration=0.25,
+            )
             word_result = word_engine.predict_from_file(tmp_path)
         except Exception as exc:
             word_result = None
