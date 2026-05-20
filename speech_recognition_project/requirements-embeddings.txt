@@ -1,0 +1,5 @@
+# Optional dependencies for pretrained speech embeddings.
+# These are not required for the sequence-MFCC model used on the Raspberry Pi.
+
+torch>=2.2.0
+transformers>=4.40.0

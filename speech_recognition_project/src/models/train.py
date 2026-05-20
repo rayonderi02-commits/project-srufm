@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import warnings
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from src.evaluation.metrics import Evaluator
 from src.features.mfcc_extraction import FeatureExtractor
+from src.features.speech_embeddings import PretrainedSpeechEmbeddingExtractor
 from src.preprocessing.noise_reduction import NoiseReducer
 from src.preprocessing.normalization import AudioNormalizer
 from src.preprocessing.silence_removal import SilenceRemover
@@ -40,10 +42,14 @@ def train_pipeline(
     config: Config | None = None,
     save_dir: str = "models",
     target_column: str = "word_label",
+    feature_type: str = "mfcc",
+    embedding_model_name: str = "facebook/wav2vec2-xls-r-300m",
 ):
     """Train a model, save artifacts, and return the fitted model plus report."""
     if target_column not in {"word_label", "accent_label"}:
         raise ValueError("target_column must be 'word_label' or 'accent_label'.")
+    if feature_type not in {"mfcc", "mfcc_sequence", "embedding"}:
+        raise ValueError("feature_type must be 'mfcc', 'mfcc_sequence', or 'embedding'.")
 
     config = config or Config.default()
     metadata = _load_metadata(metadata_csv)
@@ -55,6 +61,8 @@ def train_pipeline(
         data_dir,
         config,
         min_duration=min_duration,
+        feature_type=feature_type,
+        embedding_model_name=embedding_model_name,
     )
     if target_column == "accent_label":
         labels = accents
@@ -93,6 +101,10 @@ def train_pipeline(
     report = Evaluator(label_encoder).full_report(y_test, y_pred, test_accents)
 
     artifact_prefix = "accent_" if target_column == "accent_label" else ""
+    if feature_type == "embedding":
+        artifact_prefix += "embedding_"
+    elif feature_type == "mfcc_sequence":
+        artifact_prefix += "sequence_"
     _save_artifacts(model, scaler, label_encoder, save_dir, model_type, artifact_prefix)
     return model, report
 
@@ -116,16 +128,25 @@ def _build_feature_matrix(
     data_dir: str,
     config: Config,
     min_duration: float | None = None,
+    feature_type: str = "mfcc",
+    embedding_model_name: str = "facebook/wav2vec2-xls-r-300m",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     feature_cfg = config.features
     pre_cfg = config.preprocessing
-    extractor = FeatureExtractor(
-        n_mfcc=feature_cfg.n_mfcc,
-        n_fft=feature_cfg.n_fft,
-        hop_length=feature_cfg.hop_length,
-        n_mels=feature_cfg.n_mels,
-        sr=pre_cfg.target_sr,
-    )
+    if feature_type == "embedding":
+        extractor = PretrainedSpeechEmbeddingExtractor(
+            model_name=embedding_model_name,
+            sr=pre_cfg.target_sr,
+        )
+    else:
+        extractor = FeatureExtractor(
+            n_mfcc=feature_cfg.n_mfcc,
+            n_fft=feature_cfg.n_fft,
+            hop_length=feature_cfg.hop_length,
+            n_mels=feature_cfg.n_mels,
+            sr=pre_cfg.target_sr,
+            aggregation="temporal_stats" if feature_type == "mfcc_sequence" else "mean",
+        )
     normalizer = AudioNormalizer(target_sr=pre_cfg.target_sr)
     reducer = NoiseReducer()
     trimmer = SilenceRemover(
@@ -148,7 +169,16 @@ def _build_feature_matrix(
             audio = reducer.reduce(audio, sr=pre_cfg.target_sr)
             audio = trimmer.trim(audio, sr=pre_cfg.target_sr)
             audio = normalizer.normalize_amplitude(audio)
-            features.append(extractor.extract(audio))
+            features.append(
+                _extract_feature_with_cache(
+                    extractor,
+                    audio,
+                    audio_path,
+                    data_dir,
+                    feature_type,
+                    embedding_model_name,
+                )
+            )
             labels.append(str(row.word_label))
             accents.append(str(row.accent_label))
             splits.append(str(row.split).lower())
@@ -178,6 +208,38 @@ def _resolve_audio_path(file_path: str, data_dir: str) -> Path:
     if data_root_path.exists():
         return data_root_path
     return path
+
+
+def _extract_feature_with_cache(
+    extractor,
+    audio: np.ndarray,
+    audio_path: Path,
+    data_dir: str,
+    feature_type: str,
+    embedding_model_name: str,
+) -> np.ndarray:
+    if feature_type != "embedding":
+        return extractor.extract(audio)
+
+    cache_dir = Path(data_dir).resolve().parent / "processed" / "embedding_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    stat = audio_path.stat()
+    cache_key = "|".join(
+        [
+            str(audio_path.resolve()),
+            str(stat.st_mtime_ns),
+            str(stat.st_size),
+            embedding_model_name,
+        ]
+    )
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+    cache_path = cache_dir / f"{digest}.joblib"
+    if cache_path.exists():
+        return joblib.load(cache_path)
+
+    feature = extractor.extract(audio)
+    joblib.dump(feature, cache_path)
+    return feature
 
 
 def _split_indices(

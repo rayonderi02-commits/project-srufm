@@ -50,6 +50,7 @@ DEFAULT_PI_MIC_DEVICE_INDEX = 1
 PROMPT_WORDS_PATH = HARDWARE_ROOT / "prompt_words.txt"
 WORD_CONFIDENCE_THRESHOLD = 0.40
 WORD_TOP_N_DISPLAY = 3
+DEFAULT_EMBEDDING_MODEL = "facebook/wav2vec2-xls-r-300m"
 METADATA_COLUMNS = [
     "file_path",
     "word_label",
@@ -70,14 +71,26 @@ def _load_svm_engine(
     scaler_path: Path,
     encoder_path: Path,
     min_duration: float = 0.5,
+    feature_type: str = "mfcc",
+    embedding_model_name: str = DEFAULT_EMBEDDING_MODEL,
 ) -> InferenceEngine:
     model = SVMModel().load(model_path)
     scaler = joblib.load(scaler_path)
     label_encoder = joblib.load(encoder_path)
+    feature_extractor = None
+    if feature_type == "embedding":
+        from src.features.speech_embeddings import PretrainedSpeechEmbeddingExtractor
+
+        feature_extractor = PretrainedSpeechEmbeddingExtractor(model_name=embedding_model_name)
+    elif feature_type == "mfcc_sequence":
+        from src.features.mfcc_extraction import FeatureExtractor
+
+        feature_extractor = FeatureExtractor(aggregation="temporal_stats")
     return InferenceEngine(
         model=model,
         scaler=scaler,
         label_encoder=label_encoder,
+        feature_extractor=feature_extractor,
         min_duration=min_duration,
         silence_threshold_db=55.0,
     )
@@ -342,6 +355,7 @@ def _run_demo_recognition(
     word_model_path: Path,
     word_scaler_path: Path,
     word_encoder_path: Path,
+    word_feature_type: str,
     accent_model_path: Path,
     accent_scaler_path: Path,
     accent_encoder_path: Path,
@@ -356,6 +370,7 @@ def _run_demo_recognition(
                 word_scaler_path,
                 word_encoder_path,
                 min_duration=0.25,
+                feature_type=word_feature_type,
             )
             word_result = word_engine.predict_from_file(tmp_path)
         except Exception as exc:
@@ -498,9 +513,40 @@ with demo_tab:
     st.subheader("Speaker Audio to Text and Accent Group")
     _pipeline_steps()
 
-    word_model_path = MODELS_DIR / "svm_model.joblib"
-    word_scaler_path = MODELS_DIR / "scaler.joblib"
-    word_encoder_path = MODELS_DIR / "label_encoder.joblib"
+    embedding_word_model_path = MODELS_DIR / "embedding_svm_model.joblib"
+    embedding_word_scaler_path = MODELS_DIR / "embedding_scaler.joblib"
+    embedding_word_encoder_path = MODELS_DIR / "embedding_label_encoder.joblib"
+    sequence_word_model_path = MODELS_DIR / "sequence_svm_model.joblib"
+    sequence_word_scaler_path = MODELS_DIR / "sequence_scaler.joblib"
+    sequence_word_encoder_path = MODELS_DIR / "sequence_label_encoder.joblib"
+    mfcc_word_model_path = MODELS_DIR / "svm_model.joblib"
+    mfcc_word_scaler_path = MODELS_DIR / "scaler.joblib"
+    mfcc_word_encoder_path = MODELS_DIR / "label_encoder.joblib"
+    embedding_word_ready = _artifact_exists(
+        embedding_word_model_path,
+        embedding_word_scaler_path,
+        embedding_word_encoder_path,
+    )
+    sequence_word_ready = _artifact_exists(
+        sequence_word_model_path,
+        sequence_word_scaler_path,
+        sequence_word_encoder_path,
+    )
+    if embedding_word_ready:
+        word_model_path = embedding_word_model_path
+        word_scaler_path = embedding_word_scaler_path
+        word_encoder_path = embedding_word_encoder_path
+        word_feature_type = "embedding"
+    elif sequence_word_ready:
+        word_model_path = sequence_word_model_path
+        word_scaler_path = sequence_word_scaler_path
+        word_encoder_path = sequence_word_encoder_path
+        word_feature_type = "mfcc_sequence"
+    else:
+        word_model_path = mfcc_word_model_path
+        word_scaler_path = mfcc_word_scaler_path
+        word_encoder_path = mfcc_word_encoder_path
+        word_feature_type = "mfcc"
     accent_model_path = MODELS_DIR / "accent_svm_model.joblib"
     accent_scaler_path = MODELS_DIR / "accent_scaler.joblib"
     accent_encoder_path = MODELS_DIR / "accent_label_encoder.joblib"
@@ -510,7 +556,10 @@ with demo_tab:
     accent_data_ready, known_accents = _accent_readiness(METADATA_CSV)
 
     status_cols = st.columns(3)
-    status_cols[0].metric("Word recognizer", "Ready" if word_ready else "Missing")
+    status_cols[0].metric(
+        "Word recognizer",
+        f"Ready ({word_feature_type})" if word_ready else "Missing",
+    )
     status_cols[1].metric("Accent classifier", "Ready" if accent_ready else "Missing")
     status_cols[2].metric("Accent groups in data", f"{len(known_accents)}")
 
@@ -597,6 +646,7 @@ with demo_tab:
             word_model_path=word_model_path,
             word_scaler_path=word_scaler_path,
             word_encoder_path=word_encoder_path,
+            word_feature_type=word_feature_type,
             accent_model_path=accent_model_path,
             accent_scaler_path=accent_scaler_path,
             accent_encoder_path=accent_encoder_path,
@@ -716,6 +766,12 @@ with train_tab:
         "Trains the isolated-word recognizer from local USB microphone recordings. "
         "This is the speech-to-text component for the 20 prompt words."
     )
+    word_feature_choice = st.selectbox(
+        "Word retraining features",
+        ["mfcc_sequence", "embedding", "mfcc"],
+        index=0,
+        help="Embedding uses a pretrained speech encoder and usually performs better with little data.",
+    )
     if st.button("Retrain Spoken Word Model"):
         try:
             local_metadata = PROJECT_ROOT / "data" / "accent_metadata.csv"
@@ -730,6 +786,8 @@ with train_tab:
                     config=config,
                     save_dir=str(MODELS_DIR),
                     target_column="word_label",
+                    feature_type=word_feature_choice,
+                    embedding_model_name=DEFAULT_EMBEDDING_MODEL,
                 )
             _save_training_report(report, output_path=LATEST_WORD_TRAINING_REPORT_JSON)
             st.success("Spoken word model retrained and saved.")
@@ -755,6 +813,7 @@ with train_tab:
                 f"Current labels: {', '.join(sorted(accents)) if accents else 'none'}"
             )
     model_type = st.selectbox("Model", ["svm", "ann"], index=0)
+    feature_type = st.selectbox("Features", ["mfcc", "mfcc_sequence", "embedding"], index=0)
     config_path = st.text_input("Config path", value=str(PROJECT_ROOT / "config" / "default.yaml"))
     save_dir = st.text_input("Model output directory", value=str(MODELS_DIR))
 
@@ -769,6 +828,8 @@ with train_tab:
                     config=config,
                     save_dir=save_dir,
                     target_column="accent_label" if target == "accent" else "word_label",
+                    feature_type=feature_type,
+                    embedding_model_name=DEFAULT_EMBEDDING_MODEL,
                 )
             st.success("Training complete.")
             metrics = {

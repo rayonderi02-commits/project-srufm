@@ -1,12 +1,4 @@
-"""
-mfcc_extraction.py — MFCC feature extraction with delta and delta-delta.
-
-Extracts a fixed-size feature vector from a preprocessed audio signal:
-  - 13 MFCC coefficients
-  - 13 delta (Δ) coefficients
-  - 13 delta-delta (ΔΔ) coefficients
-  → 39-dimensional feature vector (mean across time frames)
-"""
+"""MFCC feature extraction with optional temporal statistics."""
 
 from __future__ import annotations
 
@@ -14,7 +6,7 @@ import numpy as np
 
 
 class FeatureExtractor:
-    """Extract MFCC + Δ + ΔΔ features from a preprocessed audio signal."""
+    """Extract MFCC, delta, and delta-delta features from preprocessed audio."""
 
     def __init__(
         self,
@@ -23,36 +15,25 @@ class FeatureExtractor:
         hop_length: int = 160,
         n_mels: int = 40,
         sr: int = 16000,
+        aggregation: str = "mean",
     ):
-        """
-        Args:
-            n_mfcc:      Number of MFCC coefficients (default 13).
-            n_fft:       FFT window size in samples (default 512 = 32ms @ 16kHz).
-            hop_length:  Hop length in samples (default 160 = 10ms @ 16kHz).
-            n_mels:      Number of mel filterbanks (default 40).
-            sr:          Expected sample rate (default 16000).
-        """
         self.n_mfcc = n_mfcc
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.n_mels = n_mels
         self.sr = sr
+        if aggregation not in {"mean", "temporal_stats"}:
+            raise ValueError("aggregation must be 'mean' or 'temporal_stats'.")
+        self.aggregation = aggregation
 
     @property
     def feature_dim(self) -> int:
-        """Total feature vector dimension: n_mfcc × 3 (MFCC + Δ + ΔΔ)."""
-        return self.n_mfcc * 3
+        base_dim = self.n_mfcc * 3
+        if self.aggregation == "temporal_stats":
+            return base_dim * 7
+        return base_dim
 
     def extract_mfcc(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Compute MFCC matrix.
-
-        Args:
-            audio: 1D float32 audio array at self.sr.
-
-        Returns:
-            MFCC matrix of shape (n_mfcc, T).
-        """
         import librosa
 
         return librosa.feature.mfcc(
@@ -65,33 +46,16 @@ class FeatureExtractor:
         )
 
     def extract_delta(self, mfcc: np.ndarray) -> np.ndarray:
-        """Compute first-order delta coefficients from MFCC matrix."""
         import librosa
 
         return librosa.feature.delta(mfcc, order=1)
 
     def extract_delta_delta(self, mfcc: np.ndarray) -> np.ndarray:
-        """Compute second-order delta-delta coefficients from MFCC matrix."""
         import librosa
 
         return librosa.feature.delta(mfcc, order=2)
 
     def extract(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Extract the full 39-dimensional feature vector from audio.
-
-        Computes MFCC + Δ + ΔΔ matrices, stacks them, then takes the
-        mean across the time axis to produce a fixed-size vector.
-
-        Args:
-            audio: 1D float32 audio array at self.sr.
-
-        Returns:
-            Feature vector of shape (39,).
-
-        Raises:
-            ValueError: If audio is empty or contains NaN/Inf values.
-        """
         if len(audio) == 0:
             raise ValueError("Cannot extract features from empty audio.")
         if not np.isfinite(audio).all():
@@ -100,12 +64,12 @@ class FeatureExtractor:
         mfcc = self.extract_mfcc(audio)
         delta = self.extract_delta(mfcc)
         delta2 = self.extract_delta_delta(mfcc)
-
-        # Stack along coefficient axis: shape (39, T)
         combined = np.vstack([mfcc, delta, delta2])
 
-        # Aggregate across time: mean per coefficient → shape (39,)
-        feature_vector = np.mean(combined, axis=1)
+        if self.aggregation == "temporal_stats":
+            feature_vector = self._temporal_stats(combined)
+        else:
+            feature_vector = np.mean(combined, axis=1)
 
         assert feature_vector.shape == (self.feature_dim,), (
             f"Expected shape ({self.feature_dim},), got {feature_vector.shape}"
@@ -113,18 +77,20 @@ class FeatureExtractor:
         assert np.isfinite(feature_vector).all(), (
             "Feature vector contains NaN or Inf after extraction."
         )
-
         return feature_vector.astype(np.float64)
 
+    def _temporal_stats(self, features: np.ndarray) -> np.ndarray:
+        """Preserve coarse word timing with global stats and segment means."""
+        chunks = np.array_split(features, 3, axis=1)
+        parts = [
+            np.mean(features, axis=1),
+            np.std(features, axis=1),
+            np.min(features, axis=1),
+            np.max(features, axis=1),
+        ]
+        parts.extend(np.mean(chunk, axis=1) for chunk in chunks)
+        return np.concatenate(parts, axis=0)
+
     def extract_batch(self, audio_list: list[np.ndarray]) -> np.ndarray:
-        """
-        Extract features from a list of audio arrays.
-
-        Args:
-            audio_list: List of 1D float32 audio arrays.
-
-        Returns:
-            Feature matrix of shape (N, 39).
-        """
         features = [self.extract(audio) for audio in audio_list]
         return np.array(features)

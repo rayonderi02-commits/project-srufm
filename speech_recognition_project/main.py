@@ -44,6 +44,8 @@ def cmd_train(args: argparse.Namespace) -> None:
         config=config,
         save_dir=args.save_dir,
         target_column=target_column,
+        feature_type=args.features,
+        embedding_model_name=args.embedding_model,
     )
 
     print("\n── Evaluation Report ──────────────────────────────────────")
@@ -91,6 +93,7 @@ def cmd_predict(args: argparse.Namespace) -> None:
         model=model,
         scaler=scaler,
         label_encoder=label_encoder,
+        feature_extractor=_build_feature_extractor(args.features, args.embedding_model),
     )
 
     if args.file:
@@ -217,6 +220,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="word",
         help="Train word recognition or accent classification artifacts",
     )
+    train_parser.add_argument(
+        "--features",
+        choices=["mfcc", "mfcc_sequence", "embedding"],
+        default="mfcc",
+        help="Acoustic feature representation to train with",
+    )
+    train_parser.add_argument(
+        "--embedding-model",
+        default="facebook/wav2vec2-xls-r-300m",
+        help="Hugging Face speech encoder used when --features embedding",
+    )
 
     # ── predict ────────────────────────────────────────────────────────────
     predict_parser = subparsers.add_parser("predict", help="Run inference")
@@ -238,6 +252,17 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument(
         "--model-type", choices=["svm", "ann"], default="svm",
         help="Model type (must match saved model)"
+    )
+    predict_parser.add_argument(
+        "--features",
+        choices=["mfcc", "mfcc_sequence", "embedding"],
+        default="mfcc",
+        help="Acoustic features used by the saved model",
+    )
+    predict_parser.add_argument(
+        "--embedding-model",
+        default="facebook/wav2vec2-xls-r-300m",
+        help="Hugging Face speech encoder used when --features embedding",
     )
     predict_parser.add_argument(
         "--config", default=None, help="Path to YAML config file"
@@ -289,6 +314,18 @@ def build_parser() -> argparse.ArgumentParser:
     metadata_parser.add_argument("--max-labels", type=int, default=None)
 
     return parser
+
+
+def _build_feature_extractor(feature_type: str, model_name: str):
+    if feature_type == "embedding":
+        from src.features.speech_embeddings import PretrainedSpeechEmbeddingExtractor
+
+        return PretrainedSpeechEmbeddingExtractor(model_name=model_name)
+    if feature_type == "mfcc_sequence":
+        from src.features.mfcc_extraction import FeatureExtractor
+
+        return FeatureExtractor(aggregation="temporal_stats")
+    return None
 
 
 def main() -> None:
