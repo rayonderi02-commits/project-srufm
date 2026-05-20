@@ -44,6 +44,7 @@ METADATA_CSV = (
 MODELS_DIR = PROJECT_ROOT / "models"
 PREDICTION_HISTORY_CSV = PROJECT_ROOT / "data" / "prediction_history.csv"
 LATEST_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_accent_training_report.json"
+LATEST_WORD_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_word_training_report.json"
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 DEFAULT_PI_MIC_DEVICE_INDEX = 1
 METADATA_COLUMNS = [
@@ -263,7 +264,7 @@ def _rebuild_hybrid_metadata() -> pd.DataFrame:
     return frame
 
 
-def _save_training_report(report: dict) -> None:
+def _save_training_report(report: dict, output_path: Path = LATEST_TRAINING_REPORT_JSON) -> None:
     output = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "accuracy": float(report["accuracy"]),
@@ -276,15 +277,18 @@ def _save_training_report(report: dict) -> None:
             for label, value in report.get("per_accent", {}).items()
         },
     }
-    LATEST_TRAINING_REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    LATEST_TRAINING_REPORT_JSON.write_text(json.dumps(output, indent=2), encoding="utf-8")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
 
 
-def _render_latest_training_report() -> None:
-    if not LATEST_TRAINING_REPORT_JSON.exists():
+def _render_latest_training_report(
+    report_path: Path = LATEST_TRAINING_REPORT_JSON,
+    title: str = "Latest accent training",
+) -> None:
+    if not report_path.exists():
         return
-    report = json.loads(LATEST_TRAINING_REPORT_JSON.read_text(encoding="utf-8"))
-    st.caption(f"Latest accent training: {report.get('timestamp', 'unknown')}")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    st.caption(f"{title}: {report.get('timestamp', 'unknown')}")
     cols = st.columns(4)
     cols[0].metric("Accuracy", f"{report.get('accuracy', 0) * 100:.2f}%")
     cols[1].metric("Precision", f"{report.get('precision', 0) * 100:.2f}%")
@@ -337,7 +341,7 @@ def _run_demo_recognition(
             )
             result_cols = st.columns(4)
             result_cols[0].metric("Prompt word", selected_word or "Not selected")
-            result_cols[1].metric("Recognized text", word_result.predicted_word)
+            result_cols[1].metric("Predicted spoken word", word_result.predicted_word)
             result_cols[2].metric("Word confidence", f"{word_result.confidence * 100:.1f}%")
             result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
             st.caption("Word alternatives")
@@ -611,6 +615,10 @@ with train_tab:
     st.subheader("Model Training")
     _metadata_summary(METADATA_CSV)
     _render_latest_training_report()
+    _render_latest_training_report(
+        report_path=LATEST_WORD_TRAINING_REPORT_JSON,
+        title="Latest word recognition training",
+    )
     st.divider()
     st.subheader("One-Click Accent Retraining")
     st.caption(
@@ -650,6 +658,39 @@ with train_tab:
             st.info("The next demo prediction will use the newly trained model.")
         except Exception as exc:
             st.error(f"Retraining failed: {exc}")
+
+    st.divider()
+    st.subheader("One-Click Word Recognition Retraining")
+    st.caption(
+        "Trains the isolated-word recognizer from local USB microphone recordings. "
+        "This is the speech-to-text component for the 20 prompt words."
+    )
+    if st.button("Retrain Spoken Word Model"):
+        try:
+            local_metadata = PROJECT_ROOT / "data" / "accent_metadata.csv"
+            if not local_metadata.exists():
+                raise FileNotFoundError(f"Missing local metadata: {local_metadata}")
+            config = Config.load(str(PROJECT_ROOT / "config" / "default.yaml"))
+            with st.spinner("Training spoken word SVM model... this can take a few minutes."):
+                _, report = train_pipeline(
+                    metadata_csv=str(local_metadata),
+                    data_dir=str(RAW_DIR),
+                    model_type="svm",
+                    config=config,
+                    save_dir=str(MODELS_DIR),
+                    target_column="word_label",
+                )
+            _save_training_report(report, output_path=LATEST_WORD_TRAINING_REPORT_JSON)
+            st.success("Spoken word model retrained and saved.")
+            st.json(
+                {
+                    key: report[key]
+                    for key in ("accuracy", "precision", "recall", "f1", "wer")
+                }
+            )
+            st.info("The next demo prediction will show the newly trained spoken word result.")
+        except Exception as exc:
+            st.error(f"Word retraining failed: {exc}")
 
     st.divider()
     target = st.selectbox("Target", ["word", "accent"], index=0)
