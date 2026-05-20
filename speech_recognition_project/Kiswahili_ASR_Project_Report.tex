@@ -1,0 +1,732 @@
+\documentclass[12pt,a4paper]{report}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\onehalfspacing
+
+\title{
+    \textbf{Accent-Aware Kiswahili Speech Recognition System}\\
+    \large A Raspberry Pi Based Low-Resource Speech-to-Text and Accent Classification Prototype
+}
+\author{
+    Project SRUFM
+}
+\date{May 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents the design, implementation, evaluation, and improvement of an accent-aware Kiswahili speech recognition prototype deployed on a Raspberry Pi 4. The system captures speech through a USB microphone, processes the audio signal, predicts the spoken Kiswahili word from a fixed vocabulary, and classifies the speaker's accent group into one of three target categories: Coastal, Nairobi, or Upcountry. The project was motivated by the limited availability of robust speech technology for low-resource African languages and by the need to handle regional pronunciation variation in Kiswahili.
+
+The initial system used mean-pooled Mel-Frequency Cepstral Coefficient (MFCC) features and a Support Vector Machine (SVM) classifier. This baseline achieved limited word prediction accuracy because averaging MFCCs over time removed important temporal information needed to distinguish short Kiswahili words. The system was therefore upgraded to use sequence-aware MFCC statistics, preserving global acoustic statistics and coarse beginning-middle-end temporal structure. Additional improvement was achieved using conservative audio augmentation and SVM hyperparameter tuning. The final word recognition model improved from 54.08\% accuracy in the baseline system to 80.61\% accuracy after feature redesign, augmentation, and tuning. The final word error rate was reduced to 19.39\%.
+
+The deployed prototype includes a Streamlit web interface, Raspberry Pi hardware integration, a push button, LED and buzzer feedback, prediction history, retraining controls, and live microphone inference. The system demonstrates a practical low-resource speech recognition pipeline while also highlighting the challenges of limited training data, accent variability, short-word confusion, and embedded deployment constraints.
+\end{abstract}
+
+\tableofcontents
+\listoftables
+
+\chapter{Introduction}
+
+\section{Background}
+Speech recognition systems have become widely used in human-computer interaction, virtual assistants, accessibility tools, call center automation, and language technology applications. However, most high-performing speech recognition systems are developed for high-resource languages such as English, Mandarin, Spanish, and French. Low-resource languages, including many African languages, often lack large annotated speech corpora, robust acoustic models, and production-ready language technologies.
+
+Kiswahili is one of the most widely spoken languages in East Africa and serves as a national or official language in several countries. Despite its importance, Kiswahili speech recognition still faces challenges related to limited datasets, regional accent variation, code-switching, microphone quality, and environmental noise. A model trained on one accent group may not generalize well to speakers from another region. For this reason, speech recognition systems intended for Kiswahili should consider both the spoken word and the speaker's accent characteristics.
+
+This project focuses on building a practical embedded prototype for accent-aware Kiswahili speech recognition. The system is deployed on a Raspberry Pi and uses a USB microphone for audio capture. The prototype predicts isolated Kiswahili prompt words and classifies the speaker's accent group.
+
+\section{Problem Statement}
+The core problem addressed by this project is the difficulty of accurately recognizing clearly spoken Kiswahili words when speakers have different regional accents and when only a small amount of training data is available. The initial system frequently confused words and sometimes predicted the same word, such as \texttt{ndiyo}, even when different words were spoken.
+
+The following technical challenges were identified:
+
+\begin{itemize}
+    \item The dataset was relatively small for a 20-word, three-accent classification task.
+    \item Mean-pooled MFCC features discarded important temporal patterns in the spoken word.
+    \item Accent variation introduced acoustic differences that could be confused with word differences.
+    \item The Raspberry Pi deployment environment limited the use of very large pretrained speech models.
+    \item The system needed real-time usability through a simple web interface and hardware controls.
+\end{itemize}
+
+\section{Project Objectives}
+The main objective of this project was to design and implement an accent-aware Kiswahili speech recognition prototype that can run locally on a Raspberry Pi.
+
+The specific objectives were:
+
+\begin{enumerate}
+    \item To collect and organize speech recordings for three target accent groups: Coastal, Nairobi, and Upcountry.
+    \item To build a speech processing pipeline for USB microphone audio capture, preprocessing, feature extraction, and classification.
+    \item To classify isolated Kiswahili words from a fixed vocabulary of prompt words.
+    \item To classify speaker accent group using audio features.
+    \item To integrate the software model with Raspberry Pi hardware components including a push button, LED, buzzer, and USB microphone.
+    \item To provide a local web interface for recording, prediction, confidence display, prediction history, and retraining.
+    \item To improve model performance without requiring additional recordings, using better feature representation, data augmentation, and SVM hyperparameter tuning.
+\end{enumerate}
+
+\section{Scope}
+The system is designed as an isolated-word recognition and accent classification prototype. It is not a full open-vocabulary automatic speech recognition system. The spoken-word model predicts one word from a predefined list of Kiswahili prompt words. The accent model predicts one of three accent groups. The project therefore demonstrates speech-to-text at the word level rather than full sentence transcription.
+
+\section{Significance of the Project}
+The project is significant because it demonstrates how low-resource speech recognition can be developed using affordable hardware and locally collected data. It also shows that careful feature engineering and training strategy can improve performance even when collecting more data is not possible. The prototype can support future work in local language interfaces, accent-aware voice systems, and embedded speech recognition applications.
+
+\chapter{Literature Review}
+
+\section{Low-Resource Speech Recognition}
+Low-resource speech recognition refers to building speech recognition systems for languages or domains where large annotated datasets are unavailable. Many African languages fall into this category. In such settings, model performance is often constrained by limited speaker diversity, limited acoustic coverage, and lack of high-quality transcriptions.
+
+Common strategies for low-resource speech recognition include:
+
+\begin{itemize}
+    \item Transfer learning from pretrained multilingual speech models.
+    \item Data augmentation to increase acoustic variability.
+    \item Careful feature engineering using MFCCs, filterbanks, or learned embeddings.
+    \item Speaker-independent evaluation to measure true generalization.
+    \item Use of small classical classifiers when computational resources are limited.
+\end{itemize}
+
+\section{MFCC Features}
+Mel-Frequency Cepstral Coefficients are widely used in classical speech recognition. MFCCs approximate human auditory perception by mapping audio frequencies onto the Mel scale. They provide compact representations of the spectral envelope of speech and are useful for identifying phonetic characteristics.
+
+However, MFCCs are time-dependent features. If MFCC frames are simply averaged over the entire audio clip, the resulting feature vector may lose information about the sequence of sounds in the word. This is especially harmful for short isolated words, where beginning and ending consonants are important for discrimination.
+
+\section{Support Vector Machines}
+Support Vector Machines are supervised classifiers that can perform well on small and medium-sized datasets. The radial basis function (RBF) kernel allows SVMs to learn nonlinear decision boundaries. In this project, SVMs were used because they are computationally lighter than deep neural networks and suitable for deployment in a Raspberry Pi based prototype.
+
+SVM performance depends on hyperparameters such as:
+
+\begin{itemize}
+    \item \(C\), which controls the trade-off between margin size and classification error.
+    \item \(\gamma\), which controls the influence of individual training examples in the RBF kernel.
+\end{itemize}
+
+Hyperparameter tuning can significantly improve model accuracy.
+
+\section{Data Augmentation}
+Data augmentation is a common technique for improving model generalization when additional real recordings are unavailable. In speech processing, augmentation can include adding noise, shifting audio, changing speed, changing pitch, or simulating room effects. In this project, conservative augmentation was selected to preserve the original spoken word while creating useful acoustic variations.
+
+\section{Pretrained Speech Embeddings}
+Modern speech models such as wav2vec 2.0, XLS-R, and Whisper learn rich acoustic representations from large multilingual datasets. These embeddings can improve low-resource speech tasks by transferring knowledge from large-scale pretraining. However, running such models on a Raspberry Pi can be difficult due to memory, storage, and dependency constraints. This project therefore implemented optional support for pretrained embeddings but used sequence-aware MFCCs as the practical deployed solution.
+
+\chapter{System Requirements and Design}
+
+\section{Functional Requirements}
+The system was designed to meet the following functional requirements:
+
+\begin{enumerate}
+    \item Record speech using a Raspberry Pi USB microphone.
+    \item Allow a speaker to pronounce a selected Kiswahili prompt word.
+    \item Predict the spoken word from the fixed vocabulary.
+    \item Predict the speaker's accent group.
+    \item Display prediction confidence percentages.
+    \item Display top-three word predictions.
+    \item Store prediction history.
+    \item Provide retraining controls through the web interface.
+    \item Provide hardware feedback using LED and buzzer.
+    \item Allow push button operation for recording control.
+\end{enumerate}
+
+\section{Non-Functional Requirements}
+The main non-functional requirements were:
+
+\begin{itemize}
+    \item The system should run locally on the Raspberry Pi.
+    \item The web interface should be accessible through the local network.
+    \item The system should not require cloud inference during demonstration.
+    \item The model should be lightweight enough for practical local use.
+    \item The interface should be simple enough for demonstration to supervisors and users.
+\end{itemize}
+
+\section{Hardware Components}
+The hardware setup consists of:
+
+\begin{table}[h]
+\centering
+\caption{Hardware Components}
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{Purpose} \\
+\midrule
+Raspberry Pi 4 & Main embedded computing platform \\
+USB microphone & Speech input device \\
+Push button & Start or terminate recording session \\
+LED & Visual indication during recording \\
+Buzzer & Audio feedback before and after recording \\
+Jumper wires and breadboard & Hardware connections \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{GPIO Configuration}
+The hardware pin configuration used in the system is shown in Table \ref{tab:gpio}.
+
+\begin{table}[h]
+\centering
+\caption{GPIO Configuration}
+\label{tab:gpio}
+\begin{tabular}{lll}
+\toprule
+\textbf{Component} & \textbf{GPIO / Pin} & \textbf{Function} \\
+\midrule
+Push button & Physical pin 8 / BCM14 & Start or stop recording \\
+LED & BCM17 & Recording status indicator \\
+Buzzer & BCM22 & Beep before and after recording \\
+USB microphone & USB audio device & Speech capture \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Software Architecture}
+The software system is organized into the following layers:
+
+\begin{enumerate}
+    \item \textbf{Audio Capture Layer}: Records audio from the USB microphone.
+    \item \textbf{Preprocessing Layer}: Resamples audio, reduces noise, trims silence, and normalizes amplitude.
+    \item \textbf{Feature Extraction Layer}: Extracts MFCC-based or sequence-aware MFCC features.
+    \item \textbf{Classification Layer}: Uses SVM models for word and accent prediction.
+    \item \textbf{User Interface Layer}: Provides Streamlit controls for recording, prediction, confidence display, history, and retraining.
+    \item \textbf{Hardware Control Layer}: Controls LED, buzzer, and push button behavior.
+\end{enumerate}
+
+\section{System Workflow}
+The deployed workflow is:
+
+\begin{enumerate}
+    \item User selects or views the prompt word in the web interface.
+    \item Speaker presses the recording button or uses the web recording button.
+    \item LED turns on and buzzer beeps to signal recording start.
+    \item USB microphone captures the speaker's audio.
+    \item Recording stops automatically or when the button is pressed again.
+    \item Buzzer beeps and LED turns off.
+    \item Audio is preprocessed.
+    \item Word model predicts the spoken word and top-three alternatives.
+    \item Accent model predicts the speaker's accent group.
+    \item Results and confidence percentages are displayed in the web interface.
+\end{enumerate}
+
+\chapter{Dataset Design}
+
+\section{Target Accent Groups}
+The project uses three target accent groups:
+
+\begin{itemize}
+    \item \textbf{Coastal}: Supported by Common Voice \texttt{sw-kimvita} and local coastal recordings.
+    \item \textbf{Upcountry}: Supported by Common Voice \texttt{sw-barake} and local upcountry recordings.
+    \item \textbf{Nairobi}: Supported mainly by local USB microphone recordings and weak Kenyan/Nairobi-like support from KenSpeech where applicable.
+\end{itemize}
+
+\section{Prompt Word Vocabulary}
+The spoken-word model uses a closed vocabulary of Kiswahili prompt words. The prototype vocabulary includes:
+
+\begin{center}
+\texttt{akaunti, bima, hapana, huduma, malipo, mbili, moja, msaada, namba, nane, ndiyo, nne, saba, salio, sifuri, simu, sita, tano, tatu, tisa}
+\end{center}
+
+\section{Metadata Structure}
+The metadata file contains the following key columns:
+
+\begin{table}[h]
+\centering
+\caption{Metadata Columns}
+\begin{tabular}{ll}
+\toprule
+\textbf{Column} & \textbf{Description} \\
+\midrule
+\texttt{file\_path} & Path to the audio file \\
+\texttt{word\_label} & Target spoken word \\
+\texttt{accent\_label} & Accent group label \\
+\texttt{speaker\_id} & Speaker identifier \\
+\texttt{duration\_sec} & Audio duration \\
+\texttt{split} & Training or testing split \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Dataset Size}
+The hybrid accent dataset contains 630 rows:
+
+\begin{table}[h]
+\centering
+\caption{Hybrid Accent Dataset Distribution}
+\begin{tabular}{lr}
+\toprule
+\textbf{Accent Group} & \textbf{Number of Samples} \\
+\midrule
+Nairobi & 254 \\
+Upcountry & 252 \\
+Coastal & 124 \\
+\midrule
+Total & 630 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The word recognition dataset used for the final local word model contains recordings across the 20 prompt words and three accent groups. Three recordings were skipped during training because silence trimming left them shorter than the minimum accepted duration of 0.25 seconds.
+
+\section{Dataset Limitations}
+The dataset has several limitations:
+
+\begin{itemize}
+    \item Coastal data is smaller than Nairobi and Upcountry data.
+    \item Some words have fewer or weaker examples.
+    \item Some speakers may have more recordings than others.
+    \item Background noise and inconsistent microphone distance may affect feature quality.
+    \item The system is trained for isolated words, not continuous speech.
+\end{itemize}
+
+\chapter{Methodology}
+
+\section{Audio Preprocessing}
+The preprocessing pipeline includes:
+
+\begin{enumerate}
+    \item \textbf{Loading}: Audio is loaded as a mono waveform.
+    \item \textbf{Resampling}: Audio is converted to 16 kHz.
+    \item \textbf{Noise Reduction}: Spectral noise reduction is applied.
+    \item \textbf{Silence Trimming}: Leading and trailing silence are removed.
+    \item \textbf{Duration Validation}: Clips shorter than 0.25 seconds after trimming are rejected for word recognition.
+    \item \textbf{Amplitude Normalization}: Audio is normalized to a target peak amplitude.
+\end{enumerate}
+
+\section{Baseline Feature Extraction}
+The baseline system used 13 MFCC coefficients, 13 delta coefficients, and 13 delta-delta coefficients. These were stacked into a 39-dimensional representation:
+
+\[
+\mathbf{x}_{baseline} =
+\left[
+\overline{\text{MFCC}},
+\overline{\Delta \text{MFCC}},
+\overline{\Delta^2 \text{MFCC}}
+\right]
+\]
+
+where the overline indicates averaging across time. This approach produced a compact feature vector but discarded temporal information.
+
+\section{Sequence-Aware MFCC Feature Extraction}
+To improve recognition without collecting more recordings, the feature extraction method was redesigned. Instead of only computing the mean of each coefficient, the upgraded method extracts:
+
+\begin{itemize}
+    \item Global mean
+    \item Global standard deviation
+    \item Global minimum
+    \item Global maximum
+    \item Mean of the first temporal segment
+    \item Mean of the middle temporal segment
+    \item Mean of the final temporal segment
+\end{itemize}
+
+For a 39-dimensional MFCC + delta + delta-delta frame representation, the final sequence-aware vector has:
+
+\[
+39 \times 7 = 273
+\]
+
+features.
+
+This design preserves coarse temporal structure while remaining computationally lightweight enough for Raspberry Pi deployment.
+
+\section{Data Augmentation}
+Because recording more speakers was not possible due to time constraints, conservative data augmentation was applied to training samples only. The test set was not augmented.
+
+The augmentation techniques were:
+
+\begin{itemize}
+    \item \textbf{Low-level Gaussian noise}: Simulates mild background noise.
+    \item \textbf{Small time shift}: Simulates slight recording alignment differences.
+    \item \textbf{Time stretching at 0.94x}: Simulates slower pronunciation.
+    \item \textbf{Time stretching at 1.06x}: Simulates faster pronunciation.
+\end{itemize}
+
+For the final training run, 1,628 augmented training examples were added.
+
+\section{SVM Hyperparameter Tuning}
+The SVM classifier used an RBF kernel. Hyperparameter tuning was performed using cross-validation on the training split. The tuned parameters were:
+
+\[
+C \in \{0.5, 1.0, 3.0, 10.0\}
+\]
+
+\[
+\gamma \in \{\text{scale}, 0.01, 0.003, 0.001\}
+\]
+
+The best hyperparameters found were:
+
+\[
+C = 10.0,\qquad \gamma = 0.003
+\]
+
+\section{Word Recognition Model}
+The word recognition model predicts one of the 20 prompt words. It uses:
+
+\begin{itemize}
+    \item Sequence-aware MFCC features
+    \item Training-only data augmentation
+    \item Tuned RBF SVM classifier
+    \item Class weighting to reduce imbalance effects
+\end{itemize}
+
+\section{Accent Classification Model}
+The accent classification model predicts one of:
+
+\begin{center}
+\texttt{coastal, nairobi, upcountry}
+\end{center}
+
+It uses acoustic features and an SVM classifier. The model is trained separately from the word recognition model.
+
+\section{Confidence and Top-Three Prediction}
+The system displays the top-three word predictions and their confidence scores. This is important because the correct word may appear among the top alternatives even when the top prediction is incorrect. The interface also marks uncertain predictions as unclear when confidence is low.
+
+\chapter{Implementation}
+
+\section{Project Structure}
+The main software components are organized as follows:
+
+\begin{verbatim}
+speech_recognition_project/
+    main.py
+    streamlit_app.py
+    src/
+        features/
+            mfcc_extraction.py
+            speech_embeddings.py
+        preprocessing/
+            noise_reduction.py
+            normalization.py
+            silence_removal.py
+        models/
+            svm_model.py
+            train.py
+            ann_model.py
+        inference/
+            predict.py
+        evaluation/
+            metrics.py
+    data/
+        raw/
+        processed/
+        prediction_history.csv
+    models/
+hardware/
+    accent_hardware_runner.py
+    prompt_words.txt
+\end{verbatim}
+
+\section{Streamlit Interface}
+The Streamlit interface provides:
+
+\begin{itemize}
+    \item Prompt word selection.
+    \item Raspberry Pi USB microphone recording.
+    \item Fallback audio upload.
+    \item Audio level summary.
+    \item Word prediction.
+    \item Top-three word predictions.
+    \item Accent group prediction.
+    \item Model confidence percentages.
+    \item Prediction history table.
+    \item Retrain buttons.
+    \item Augmentation and SVM tuning options.
+\end{itemize}
+
+\section{Hardware Integration}
+The hardware runner controls GPIO devices and microphone recording. The LED turns on during recording, while the buzzer provides start and end feedback. The push button can be used to start or terminate a recording session. This improves usability because the speaker does not need to interact only with the web interface.
+
+\section{Local Deployment}
+The Streamlit application runs locally on the Raspberry Pi through a systemd service:
+
+\begin{verbatim}
+srufm-streamlit.service
+\end{verbatim}
+
+The hardware button runner also runs as a service:
+
+\begin{verbatim}
+srufm-hardware-button.service
+\end{verbatim}
+
+The local web interface is accessible over the local network, for example:
+
+\begin{verbatim}
+http://10.205.17.153:8501
+\end{verbatim}
+
+\chapter{Experimental Results}
+
+\section{Accent Classification Results}
+The latest accent classification model achieved:
+
+\begin{table}[h]
+\centering
+\caption{Accent Classification Results}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Overall Accuracy & 75.00\% \\
+Coastal Accuracy & 69.23\% \\
+Nairobi Accuracy & 71.43\% \\
+Upcountry Accuracy & 79.41\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Word Recognition Progression}
+The word recognition model improved through three main stages.
+
+\begin{table}[h]
+\centering
+\caption{Word Recognition Improvement}
+\begin{tabular}{p{7cm}rr}
+\toprule
+\textbf{Model Version} & \textbf{Accuracy} & \textbf{WER} \\
+\midrule
+Baseline mean MFCC + SVM & 54.08\% & 45.92\% \\
+Sequence-aware MFCC + SVM & 75.51\% & 24.49\% \\
+Sequence-aware MFCC + augmentation + tuned SVM & 80.61\% & 19.39\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Final Word Recognition Metrics}
+The final word recognition model achieved:
+
+\begin{table}[h]
+\centering
+\caption{Final Word Recognition Metrics}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Accuracy & 80.61\% \\
+Precision & 82.27\% \\
+Recall & 78.36\% \\
+F1 Score & 77.95\% \\
+Word Error Rate & 19.39\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Final Per-Accent Word Recognition Accuracy}
+\begin{table}[h]
+\centering
+\caption{Final Word Model Accuracy by Accent}
+\begin{tabular}{lr}
+\toprule
+\textbf{Accent Group} & \textbf{Accuracy} \\
+\midrule
+Coastal & 64.71\% \\
+Nairobi & 87.04\% \\
+Upcountry & 77.78\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Best Predicted Words}
+The strongest word classes in the final model include:
+
+\begin{table}[h]
+\centering
+\caption{Strongly Predicted Word Classes}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Word} & \textbf{Precision} & \textbf{Recall} & \textbf{F1 Score} \\
+\midrule
+\texttt{akaunti} & 1.00 & 1.00 & 1.00 \\
+\texttt{moja} & 1.00 & 1.00 & 1.00 \\
+\texttt{nane} & 1.00 & 1.00 & 1.00 \\
+\texttt{simu} & 1.00 & 1.00 & 1.00 \\
+\texttt{huduma} & 0.90 & 0.90 & 0.90 \\
+\texttt{namba} & 1.00 & 0.83 & 0.91 \\
+\texttt{mbili} & 1.00 & 0.80 & 0.89 \\
+\texttt{sita} & 0.80 & 1.00 & 0.89 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Weak Predicted Words}
+The weaker word classes include:
+
+\begin{table}[h]
+\centering
+\caption{Weak Word Classes}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Word} & \textbf{Precision} & \textbf{Recall} & \textbf{F1 Score} \\
+\midrule
+\texttt{tatu} & 0.33 & 0.50 & 0.40 \\
+\texttt{malipo} & 0.50 & 0.33 & 0.40 \\
+\texttt{nne} & 0.67 & 0.50 & 0.57 \\
+\texttt{ndiyo} & 0.45 & 0.83 & 0.59 \\
+\texttt{tisa} & 1.00 & 0.50 & 0.67 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion of Results}
+The results show that the main performance limitation of the baseline model was not only the amount of data, but also the feature representation. The baseline mean MFCC model compressed the entire word into a single average vector, which removed useful ordering information. After introducing sequence-aware MFCC features, accuracy improved by more than 21 percentage points.
+
+Further improvement was achieved by training-only augmentation and SVM tuning. The final model achieved 80.61\% accuracy, showing that meaningful improvement was possible without recording additional data.
+
+However, the model still performs unevenly across accent groups. Nairobi achieved the highest word accuracy at 87.04\%, while Coastal remained lower at 64.71\%. This is likely due to fewer Coastal samples and greater pronunciation differences. Some words also remain difficult, especially short or phonetically similar words.
+
+\chapter{Challenges Encountered}
+
+\section{Microphone Selection}
+The Raspberry Pi does not support direct analog microphone input through a standard audio jack. The project initially considered UART microphone options, but USB microphones were more practical because Raspberry Pi can recognize them as audio capture devices through ALSA.
+
+\section{ALSA Warnings}
+During microphone testing, ALSA produced warnings related to unavailable PCM devices and JACK server messages. These warnings are common in Raspberry Pi audio configurations and do not always indicate recording failure. The main issue was ensuring that the correct USB microphone device index was selected.
+
+\section{Push Button and GPIO Issues}
+The push button was connected to physical pin 8, corresponding to BCM14. The software was updated to match this physical wiring. LED and buzzer behavior also required verification through GPIO pin mapping.
+
+\section{Word Prediction Bias}
+The model initially predicted \texttt{ndiyo} frequently. This was caused by weak feature representation and low confidence predictions. The interface was updated to show top-three predictions and to mark low-confidence outputs as unclear.
+
+\section{Pretrained Model Constraints}
+Support for pretrained speech embeddings was implemented, but installing PyTorch and Transformers on the Raspberry Pi was difficult because of large downloads and network instability. A PyTorch wheel download failed halfway through a 426 MB file. For this reason, sequence-aware MFCCs were selected as the practical deployed improvement.
+
+\chapter{Conclusion}
+
+This project successfully developed and deployed an accent-aware Kiswahili speech recognition prototype on Raspberry Pi. The system captures audio through a USB microphone, predicts isolated Kiswahili words, classifies accent groups, and displays confidence scores through a local Streamlit interface. Hardware integration through a push button, LED, and buzzer makes the prototype suitable for live demonstration.
+
+The most important technical improvement was replacing mean-pooled MFCCs with sequence-aware MFCC statistics. This change preserved temporal information in the spoken word and improved word recognition accuracy from 54.08\% to 75.51\%. Further improvement through data augmentation and SVM hyperparameter tuning increased final accuracy to 80.61\% and reduced word error rate to 19.39\%.
+
+The project demonstrates that practical low-resource speech recognition can be improved significantly through careful feature design, conservative augmentation, and model tuning, even when additional recordings cannot be collected. The system remains a prototype, but it provides a strong foundation for future work in Kiswahili speech technology.
+
+\chapter{Recommendations and Future Work}
+
+\section{Increase Dataset Balance}
+Future work should collect more balanced data across the three accent groups, especially Coastal speakers. Each accent group should ideally contain similar numbers of speakers and recordings per word.
+
+\section{Speaker-Independent Evaluation}
+Future evaluation should ensure that the same speaker does not appear in both training and testing splits. This will provide a more realistic measure of performance on unseen speakers.
+
+\section{Pretrained Speech Embeddings}
+When computational resources allow, the system should use pretrained multilingual speech embeddings from models such as XLS-R or wav2vec2. These models may provide better phonetic representations than handcrafted MFCC features.
+
+\section{Accent-Conditioned Word Recognition}
+The system could be improved by using the predicted accent to select an accent-specific word model:
+
+\[
+\text{audio} \rightarrow \text{accent model} \rightarrow \text{accent-specific word model}
+\]
+
+This may reduce confusion caused by accent-specific pronunciation differences.
+
+\section{Continuous Speech Recognition}
+The current system recognizes isolated words. Future versions could expand to phrase-level or sentence-level recognition using a language model or end-to-end ASR architecture.
+
+\section{Improved User Feedback}
+The interface can be expanded to show confusion matrices, per-word trends, audio quality warnings, and recommended words for demonstration.
+
+\appendix
+
+\chapter{Final Model Configuration}
+
+\begin{table}[h]
+\centering
+\caption{Final Word Model Configuration}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Feature type & Sequence-aware MFCC \\
+Feature dimension & 273 \\
+Classifier & SVM with RBF kernel \\
+Best \(C\) & 10.0 \\
+Best \(\gamma\) & 0.003 \\
+Augmentation & Enabled \\
+Training-only augmented examples & 1,628 \\
+Final accuracy & 80.61\% \\
+Final WER & 19.39\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\chapter{Useful Commands}
+
+\section{Run the Streamlit Application}
+\begin{verbatim}
+streamlit run streamlit_app.py --server.address 0.0.0.0
+\end{verbatim}
+
+\section{Train Word Model with Sequence Features, Augmentation, and SVM Tuning}
+\begin{verbatim}
+python main.py train \
+  --target word \
+  --model svm \
+  --features mfcc_sequence \
+  --augment \
+  --tune-svm \
+  --data-dir data/raw \
+  --metadata data/accent_metadata.csv \
+  --save-dir models
+\end{verbatim}
+
+\section{Restart Raspberry Pi Services}
+\begin{verbatim}
+sudo systemctl restart srufm-streamlit.service
+sudo systemctl restart srufm-hardware-button.service
+\end{verbatim}
+
+\begin{thebibliography}{9}
+
+\bibitem{davis1980}
+Davis, S. and Mermelstein, P. (1980).
+Comparison of parametric representations for monosyllabic word recognition in continuously spoken sentences.
+\textit{IEEE Transactions on Acoustics, Speech, and Signal Processing}.
+
+\bibitem{cortes1995}
+Cortes, C. and Vapnik, V. (1995).
+Support-vector networks.
+\textit{Machine Learning}.
+
+\bibitem{park2019}
+Park, D. S., Chan, W., Zhang, Y., Chiu, C. C., Zoph, B., Cubuk, E. D., and Le, Q. V. (2019).
+SpecAugment: A simple data augmentation method for automatic speech recognition.
+\textit{Interspeech}.
+
+\bibitem{baevski2020}
+Baevski, A., Zhou, Y., Mohamed, A., and Auli, M. (2020).
+wav2vec 2.0: A framework for self-supervised learning of speech representations.
+\textit{NeurIPS}.
+
+\bibitem{babu2021}
+Babu, A. et al. (2021).
+XLS-R: Self-supervised cross-lingual speech representation learning at scale.
+\textit{arXiv preprint}.
+
+\bibitem{mozilla}
+Mozilla Foundation.
+Common Voice Dataset.
+\url{https://commonvoice.mozilla.org/}
+
+\bibitem{librosa}
+McFee, B. et al. (2015).
+librosa: Audio and music signal analysis in Python.
+\textit{Proceedings of the Python in Science Conference}.
+
+\end{thebibliography}
+
+\end{document}
