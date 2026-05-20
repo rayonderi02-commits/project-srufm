@@ -316,6 +316,9 @@ def _save_training_report(report: dict, output_path: Path = LATEST_TRAINING_REPO
             for label, value in report.get("per_accent", {}).items()
         },
     }
+    for key in ("feature_type", "augmentation", "tuned_svm", "best_params", "best_cv_score"):
+        if key in report:
+            output[key] = report[key]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
 
@@ -342,6 +345,15 @@ def _render_latest_training_report(
                 ]
             ),
             use_container_width=True,
+        )
+    if report.get("feature_type") or report.get("best_params"):
+        st.caption("Training setup")
+        st.json(
+            {
+                key: report[key]
+                for key in ("feature_type", "augmentation", "tuned_svm", "best_params", "best_cv_score")
+                if key in report
+            }
         )
 
 
@@ -772,6 +784,17 @@ with train_tab:
         index=0,
         help="Embedding uses a pretrained speech encoder and usually performs better with little data.",
     )
+    word_train_cols = st.columns(2)
+    use_augmentation = word_train_cols[0].checkbox(
+        "Use audio augmentation",
+        value=True,
+        help="Creates conservative noise, shift, and speed variants for training only.",
+    )
+    tune_word_svm = word_train_cols[1].checkbox(
+        "Tune SVM",
+        value=True,
+        help="Searches C and gamma values using cross-validation on the training split.",
+    )
     if st.button("Retrain Spoken Word Model"):
         try:
             local_metadata = PROJECT_ROOT / "data" / "accent_metadata.csv"
@@ -788,6 +811,8 @@ with train_tab:
                     target_column="word_label",
                     feature_type=word_feature_choice,
                     embedding_model_name=DEFAULT_EMBEDDING_MODEL,
+                    augment=use_augmentation,
+                    tune_svm=tune_word_svm,
                 )
             _save_training_report(report, output_path=LATEST_WORD_TRAINING_REPORT_JSON)
             st.success("Spoken word model retrained and saved.")
@@ -830,6 +855,8 @@ with train_tab:
                     target_column="accent_label" if target == "accent" else "word_label",
                     feature_type=feature_type,
                     embedding_model_name=DEFAULT_EMBEDDING_MODEL,
+                    augment=target == "word",
+                    tune_svm=model_type == "svm",
                 )
             st.success("Training complete.")
             metrics = {

@@ -8,6 +8,7 @@ import warnings
 from pathlib import Path
 
 import joblib
+import librosa
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -44,6 +45,8 @@ def train_pipeline(
     target_column: str = "word_label",
     feature_type: str = "mfcc",
     embedding_model_name: str = "facebook/wav2vec2-xls-r-300m",
+    augment: bool = False,
+    tune_svm: bool = False,
 ):
     """Train a model, save artifacts, and return the fitted model plus report."""
     if target_column not in {"word_label", "accent_label"}:
@@ -56,7 +59,7 @@ def train_pipeline(
     _warn_on_accent_imbalance(metadata["accent_label"].to_numpy())
 
     min_duration = 0.25 if target_column == "word_label" else None
-    X, labels, accents, splits = _build_feature_matrix(
+    X, labels, accents, splits, audio_paths = _build_feature_matrix(
         metadata,
         data_dir,
         config,
@@ -74,6 +77,18 @@ def train_pipeline(
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
     test_accents = accents[test_idx]
+
+    if augment and target_column == "word_label" and feature_type != "embedding":
+        X_aug, y_aug = _build_augmented_training_features(
+            audio_paths=audio_paths[train_idx],
+            y_train=y_train,
+            config=config,
+            feature_type=feature_type,
+        )
+        if len(X_aug):
+            X_train = np.vstack([X_train, X_aug])
+            y_train = np.concatenate([y_train, y_aug])
+            logger.info("Added %d augmented training examples.", len(X_aug))
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
@@ -95,10 +110,19 @@ def train_pipeline(
             validation_split=0.1,
         )
     else:
-        model.train(X_train_scaled, y_train)
+        if tune_svm:
+            model.tune(X_train_scaled, y_train)
+        else:
+            model.train(X_train_scaled, y_train)
 
     y_pred = model.predict(X_test_scaled)
     report = Evaluator(label_encoder).full_report(y_test, y_pred, test_accents)
+    report["feature_type"] = feature_type
+    report["augmentation"] = bool(augment and target_column == "word_label")
+    report["tuned_svm"] = bool(tune_svm and model_type == "svm")
+    if hasattr(model, "best_params_"):
+        report["best_params"] = model.best_params_
+        report["best_cv_score"] = model.best_cv_score_
 
     artifact_prefix = "accent_" if target_column == "accent_label" else ""
     if feature_type == "embedding":
@@ -130,7 +154,7 @@ def _build_feature_matrix(
     min_duration: float | None = None,
     feature_type: str = "mfcc",
     embedding_model_name: str = "facebook/wav2vec2-xls-r-300m",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     feature_cfg = config.features
     pre_cfg = config.preprocessing
     if feature_type == "embedding":
@@ -159,6 +183,7 @@ def _build_feature_matrix(
     labels: list[str] = []
     accents: list[str] = []
     splits: list[str] = []
+    audio_paths: list[Path] = []
     skipped: list[str] = []
 
     for row in metadata.itertuples(index=False):
@@ -182,6 +207,7 @@ def _build_feature_matrix(
             labels.append(str(row.word_label))
             accents.append(str(row.accent_label))
             splits.append(str(row.split).lower())
+            audio_paths.append(audio_path)
         except Exception as exc:
             skipped.append(f"{audio_path}: {exc}")
 
@@ -197,7 +223,72 @@ def _build_feature_matrix(
         np.asarray(labels),
         np.asarray(accents),
         np.asarray(splits),
+        np.asarray(audio_paths, dtype=object),
     )
+
+
+def _build_augmented_training_features(
+    audio_paths: np.ndarray,
+    y_train: np.ndarray,
+    config: Config,
+    feature_type: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    pre_cfg = config.preprocessing
+    feature_cfg = config.features
+    extractor = FeatureExtractor(
+        n_mfcc=feature_cfg.n_mfcc,
+        n_fft=feature_cfg.n_fft,
+        hop_length=feature_cfg.hop_length,
+        n_mels=feature_cfg.n_mels,
+        sr=pre_cfg.target_sr,
+        aggregation="temporal_stats" if feature_type == "mfcc_sequence" else "mean",
+    )
+    normalizer = AudioNormalizer(target_sr=pre_cfg.target_sr)
+    reducer = NoiseReducer()
+    trimmer = SilenceRemover(
+        top_db=pre_cfg.top_db,
+        min_duration=0.25,
+        max_duration=pre_cfg.max_duration,
+    )
+    rng = np.random.default_rng(config.training.random_state)
+    features: list[np.ndarray] = []
+    labels: list[int] = []
+
+    for audio_path, label in zip(audio_paths, y_train):
+        try:
+            audio, orig_sr = load_audio(audio_path)
+            audio = normalizer.resample(audio, orig_sr)
+            audio = reducer.reduce(audio, sr=pre_cfg.target_sr)
+            audio = trimmer.trim(audio, sr=pre_cfg.target_sr)
+            audio = normalizer.normalize_amplitude(audio)
+            for augmented in _augment_audio(audio, pre_cfg.target_sr, rng):
+                augmented = trimmer.trim(augmented, sr=pre_cfg.target_sr)
+                augmented = normalizer.normalize_amplitude(augmented)
+                features.append(extractor.extract(augmented))
+                labels.append(int(label))
+        except Exception as exc:
+            logger.debug("Skipped augmentation for %s: %s", audio_path, exc)
+
+    if not features:
+        return np.empty((0, extractor.feature_dim)), np.empty((0,), dtype=int)
+    return np.vstack(features), np.asarray(labels, dtype=int)
+
+
+def _augment_audio(audio: np.ndarray, sr: int, rng: np.random.Generator) -> list[np.ndarray]:
+    """Create conservative audio variants that preserve the spoken word."""
+    variants: list[np.ndarray] = []
+    rms = float(np.sqrt(np.mean(audio**2)) + 1e-9)
+
+    noise = rng.normal(0.0, rms * 0.015, size=len(audio)).astype(np.float32)
+    variants.append((audio + noise).astype(np.float32))
+
+    shift = int(sr * 0.04)
+    variants.append(np.roll(audio, shift).astype(np.float32))
+
+    variants.append(librosa.effects.time_stretch(audio, rate=0.94).astype(np.float32))
+    variants.append(librosa.effects.time_stretch(audio, rate=1.06).astype(np.float32))
+
+    return variants
 
 
 def _resolve_audio_path(file_path: str, data_dir: str) -> Path:

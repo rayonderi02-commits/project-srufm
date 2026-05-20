@@ -46,6 +46,8 @@ def cmd_train(args: argparse.Namespace) -> None:
         target_column=target_column,
         feature_type=args.features,
         embedding_model_name=args.embedding_model,
+        augment=args.augment,
+        tune_svm=args.tune_svm,
     )
 
     print("\n── Evaluation Report ──────────────────────────────────────")
@@ -230,6 +232,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default="facebook/wav2vec2-xls-r-300m",
         help="Hugging Face speech encoder used when --features embedding",
+    )
+    train_parser.add_argument(
+        "--augment",
+        action="store_true",
+        help="Add conservative audio augmentation to the training split",
+    )
+    train_parser.add_argument(
+        "--tune-svm",
+        action="store_true",
+        help="Run SVM hyperparameter grid search on the training split",
     )
 
     # ── predict ────────────────────────────────────────────────────────────

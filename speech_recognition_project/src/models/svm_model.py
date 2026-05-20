@@ -6,6 +6,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.svm import SVC
 
 
@@ -52,6 +53,49 @@ class SVMModel:
             raise ValueError("SVM training requires at least two classes.")
 
         self.model.fit(X_train, y_train)
+        self._is_trained = True
+        return self
+
+    def tune(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        param_grid: dict | None = None,
+        cv: int = 3,
+    ) -> "SVMModel":
+        """Tune SVM hyperparameters with cross-validation, then keep the best model."""
+        X_train = np.asarray(X_train)
+        y_train = np.asarray(y_train)
+        if param_grid is None:
+            param_grid = {
+                "C": [0.5, 1.0, 3.0, 10.0],
+                "gamma": ["scale", 0.01, 0.003, 0.001],
+            }
+        class_counts = np.bincount(y_train)
+        usable_counts = class_counts[class_counts > 0]
+        n_splits = min(cv, int(usable_counts.min())) if len(usable_counts) else 0
+        if n_splits < 2:
+            return self.train(X_train, y_train)
+
+        base = SVC(
+            kernel=self.kernel,
+            probability=True,
+            random_state=self.random_state,
+            class_weight=self.class_weight,
+        )
+        search = GridSearchCV(
+            base,
+            param_grid=param_grid,
+            cv=StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state),
+            scoring="accuracy",
+            n_jobs=-1,
+        )
+        search.fit(X_train, y_train)
+        self.model = search.best_estimator_
+        self.C = self.model.C
+        self.gamma = self.model.gamma
+        self.best_params_ = search.best_params_
+        self.best_cv_score_ = float(search.best_score_)
         self._is_trained = True
         return self
 
