@@ -49,6 +49,7 @@ ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 DEFAULT_PI_MIC_DEVICE_INDEX = 1
 PROMPT_WORDS_PATH = HARDWARE_ROOT / "prompt_words.txt"
 WORD_CONFIDENCE_THRESHOLD = 0.40
+WORD_TOP_N_DISPLAY = 3
 METADATA_COLUMNS = [
     "file_path",
     "word_label",
@@ -366,30 +367,37 @@ def _run_demo_recognition(
         elif word_result:
             word_is_confident = word_result.confidence >= WORD_CONFIDENCE_THRESHOLD
             displayed_word = word_result.predicted_word if word_is_confident else "unclear"
-            is_match = (
-                selected_word.strip().lower() == word_result.predicted_word.strip().lower()
-                if selected_word and word_is_confident
-                else False
-            )
+            selected_word_normalized = selected_word.strip().lower()
+            top_word_guesses = word_result.top_k[:WORD_TOP_N_DISPLAY]
+            prompt_in_top_3 = any(
+                selected_word_normalized == str(word).strip().lower()
+                for word, _ in top_word_guesses
+            ) if selected_word else False
             result_cols = st.columns(4)
             result_cols[0].metric("Prompt word", selected_word or "Not selected")
             result_cols[1].metric("Predicted spoken word", displayed_word)
             result_cols[2].metric("Word confidence", f"{word_result.confidence * 100:.1f}%")
-            result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
+            result_cols[3].metric("Prompt in top 3", "Yes" if prompt_in_top_3 else "No")
             if not word_is_confident:
                 st.warning(
                     f"Word confidence is below {WORD_CONFIDENCE_THRESHOLD * 100:.0f}%. "
                     f"Top guess was `{word_result.predicted_word}`, but the word is unclear."
                 )
-            st.caption("Word alternatives")
+            st.caption("Top 3 spoken-word guesses")
             word_probabilities = pd.DataFrame(
-                word_result.top_k,
+                top_word_guesses,
                 columns=["word", "probability"],
             )
+            word_probabilities.insert(0, "rank", range(1, len(word_probabilities) + 1))
             word_probabilities["Confidence %"] = word_probabilities["probability"] * 100
+            if selected_word:
+                word_probabilities["Correct prompt"] = word_probabilities["word"].str.lower().eq(
+                    selected_word_normalized
+                )
             st.dataframe(
-                word_probabilities[["word", "Confidence %"]],
+                word_probabilities.drop(columns=["probability"]),
                 use_container_width=True,
+                hide_index=True,
             )
 
     st.divider()
