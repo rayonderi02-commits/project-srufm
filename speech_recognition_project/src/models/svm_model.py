@@ -23,17 +23,20 @@ class SVMModel:
         C: float = 1.0,
         gamma: str | float = "scale",
         random_state: int = 42,
+        class_weight: str | dict | None = None,
     ):
         self.kernel = kernel
         self.C = C
         self.gamma = gamma
         self.random_state = random_state
+        self.class_weight = class_weight
         self.model = SVC(
             kernel=kernel,
             C=C,
             gamma=gamma,
             probability=True,
             random_state=random_state,
+            class_weight=class_weight,
         )
         self._is_trained = False
 

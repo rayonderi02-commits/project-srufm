@@ -47,6 +47,7 @@ LATEST_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_accent_training_re
 LATEST_WORD_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_word_training_report.json"
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 DEFAULT_PI_MIC_DEVICE_INDEX = 1
+PROMPT_WORDS_PATH = HARDWARE_ROOT / "prompt_words.txt"
 METADATA_COLUMNS = [
     "file_path",
     "word_label",
@@ -87,6 +88,14 @@ def _accent_readiness(path: Path) -> tuple[bool, set[str]]:
 
 
 def _word_prompts(metadata_path: Path, encoder_path: Path) -> list[str]:
+    if PROMPT_WORDS_PATH.exists():
+        words = [
+            line.strip().lower()
+            for line in PROMPT_WORDS_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if words:
+            return words
     if encoder_path.exists():
         try:
             encoder = joblib.load(encoder_path)
@@ -98,6 +107,13 @@ def _word_prompts(metadata_path: Path, encoder_path: Path) -> list[str]:
         if "word_label" in frame.columns:
             return sorted(frame["word_label"].dropna().astype(str).unique())
     return []
+
+
+def _show_supported_words(words: list[str]) -> None:
+    if not words:
+        return
+    st.caption("Supported spoken words for this prototype:")
+    st.write(" · ".join(f"`{word}`" for word in words))
 
 
 def _record_from_pi_mic(duration: float, device_index: int) -> str:
@@ -345,8 +361,13 @@ def _run_demo_recognition(
             result_cols[2].metric("Word confidence", f"{word_result.confidence * 100:.1f}%")
             result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
             st.caption("Word alternatives")
+            word_probabilities = pd.DataFrame(
+                word_result.top_k,
+                columns=["word", "probability"],
+            )
+            word_probabilities["Confidence %"] = word_probabilities["probability"] * 100
             st.dataframe(
-                pd.DataFrame(word_result.top_k, columns=["word", "probability"]),
+                word_probabilities[["word", "Confidence %"]],
                 use_container_width=True,
             )
 
@@ -471,6 +492,7 @@ with demo_tab:
         )
 
     prompts = _word_prompts(METADATA_CSV, word_encoder_path)
+    _show_supported_words(prompts)
     if prompts:
         selected_word = st.selectbox("Word for speaker to pronounce", prompts)
     else:

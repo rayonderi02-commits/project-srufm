@@ -65,7 +65,13 @@ def train_pipeline(
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    model = _build_model(model_type, X.shape[1], len(label_encoder.classes_), config)
+    model = _build_model(
+        model_type,
+        X.shape[1],
+        len(label_encoder.classes_),
+        config,
+        target_column=target_column,
+    )
     if model_type == "ann":
         model.train(
             X_train_scaled,
@@ -193,6 +199,7 @@ def _build_model(
     input_dim: int,
     num_classes: int,
     config: Config,
+    target_column: str = "word_label",
 ):
     if model_type == "svm":
         from src.models.svm_model import SVMModel
@@ -202,6 +209,7 @@ def _build_model(
             C=config.model.svm_C,
             gamma=config.model.svm_gamma,
             random_state=config.model.random_state,
+            class_weight="balanced" if target_column == "word_label" else None,
         )
     if model_type == "ann":
         from src.models.ann_model import ANNModel
