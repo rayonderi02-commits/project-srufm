@@ -48,6 +48,7 @@ LATEST_WORD_TRAINING_REPORT_JSON = PROJECT_ROOT / "data" / "latest_word_training
 ACCENT_GROUPS = ["coastal", "nairobi", "upcountry"]
 DEFAULT_PI_MIC_DEVICE_INDEX = 1
 PROMPT_WORDS_PATH = HARDWARE_ROOT / "prompt_words.txt"
+WORD_CONFIDENCE_THRESHOLD = 0.40
 METADATA_COLUMNS = [
     "file_path",
     "word_label",
@@ -218,8 +219,10 @@ def _append_prediction_history(
         "confidence_percent": "" if error else round(accent_result.confidence * 100, 2),
         "word_prediction": (
             word_result.predicted_word
-            if word_result is not None and not word_result.is_error
-            else ""
+            if word_result is not None
+            and not word_result.is_error
+            and word_result.confidence >= WORD_CONFIDENCE_THRESHOLD
+            else "unclear" if word_result is not None and not word_result.is_error else ""
         ),
         "word_confidence_percent": (
             round(word_result.confidence * 100, 2)
@@ -361,16 +364,23 @@ def _run_demo_recognition(
         if word_result and word_result.is_error:
             st.error(word_result.error)
         elif word_result:
+            word_is_confident = word_result.confidence >= WORD_CONFIDENCE_THRESHOLD
+            displayed_word = word_result.predicted_word if word_is_confident else "unclear"
             is_match = (
                 selected_word.strip().lower() == word_result.predicted_word.strip().lower()
-                if selected_word
+                if selected_word and word_is_confident
                 else False
             )
             result_cols = st.columns(4)
             result_cols[0].metric("Prompt word", selected_word or "Not selected")
-            result_cols[1].metric("Predicted spoken word", word_result.predicted_word)
+            result_cols[1].metric("Predicted spoken word", displayed_word)
             result_cols[2].metric("Word confidence", f"{word_result.confidence * 100:.1f}%")
             result_cols[3].metric("Prompt match", "Yes" if is_match else "No")
+            if not word_is_confident:
+                st.warning(
+                    f"Word confidence is below {WORD_CONFIDENCE_THRESHOLD * 100:.0f}%. "
+                    f"Top guess was `{word_result.predicted_word}`, but the word is unclear."
+                )
             st.caption("Word alternatives")
             word_probabilities = pd.DataFrame(
                 word_result.top_k,
